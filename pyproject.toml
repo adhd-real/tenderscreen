@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tenderscreen"
+version = "0.1.0"
+description = "Reads Indian government tender and award notices and extracts structured fields."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+# Exact pins so the cloud VM and CI run identical tool versions.
+# Dependabot (.github/dependabot.yml) proposes upgrades weekly.
+dev = [
+    "mypy==2.4.1",
+    "pip-audit==2.10.1",
+    "pytest==9.2.0",
+    "ruff==0.17.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tenderscreen"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# data/ holds uploaded documents, not code; uploads must never fail lint or CI.
+extend-exclude = ["data"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # import sorting
+    "B",       # bugbear: likely bugs
+    "UP",      # pyupgrade: modern syntax
+    "SIM",     # simplifications
+    "RUF",     # ruff-specific checks
+    "S",       # bandit: security issues
+    "PT",      # pytest style
+    "DTZ",     # timezone-naive datetimes (tender deadlines are IST)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# assert is how pytest checks results; it stays banned in src/ because
+# `python -O` strips asserts, so they must never guard real logic.
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
