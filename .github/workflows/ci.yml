@@ -43,8 +43,13 @@ jobs:
       - name: Type check (mypy)
         run: mypy
 
-      - name: Tests (pytest)
+      # pyproject.toml makes pytest measure coverage of src/tenderscreen and fail
+      # below 90% line coverage ([tool.coverage.report] fail_under).
+      - name: Tests with coverage gate (pytest)
         run: pytest
+
+      - name: Licence check (fail on GPL, LGPL or AGPL dependencies)
+        run: python -m tenderscreen.devtools.licence_check
 
       - name: Dependency vulnerability audit (pip-audit)
         run: pip-audit --skip-editable

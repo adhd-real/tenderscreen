@@ -25,6 +25,8 @@ ruff format .               # format (CI runs: ruff format --check .)
 mypy                        # strict type check of src/ and tests/
 pytest                      # tests
 pip-audit --skip-editable   # dependencies with known vulnerabilities
+python -m tenderscreen.devtools.licence_check  # fail on GPL, LGPL or AGPL dependencies
+pytest --no-cov tests/<path>  # subset of tests; plain pytest fails below 90% coverage of src/
 ```
 
 Run all five before every commit. CI (`.github/workflows/ci.yml`) runs the same
@@ -34,6 +36,8 @@ checks on Python 3.12 and 3.13, plus a TruffleHog secret scan.
 
 - `src/tenderscreen/`: package code (src layout; import as `tenderscreen`).
 - `tests/`: pytest tests. `tests/test_<module>.py` mirrors `src/tenderscreen/<module>.py`.
+- `tests/<pkg>/test_<module>.py` mirrors `src/tenderscreen/<pkg>/<module>.py` (test dirs are packages).
+- `src/tenderscreen/devtools/`: CI tooling (licence check), not used by the pipeline.
 - `data/manual/`: public tender documents the user uploads through GitHub.
   Committed. Read them freely; never modify, rename or delete them.
 - `data/raw/`: scratch downloads. Git-ignored.

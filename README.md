@@ -16,7 +16,8 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 Run all checks (the same ones CI runs):
 
 ```bash
-ruff check . && ruff format --check . && mypy && pytest && pip-audit --skip-editable
+ruff check . && ruff format --check . && mypy && pytest && pip-audit --skip-editable \
+  && python -m tenderscreen.devtools.licence_check
 ```
 
 Project rules for contributors and for Claude live in [CLAUDE.md](CLAUDE.md).

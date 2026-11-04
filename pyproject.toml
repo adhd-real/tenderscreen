@@ -17,6 +17,7 @@ dev = [
     "mypy==2.4.1",
     "pip-audit==2.10.1",
     "pytest==9.2.0",
+    "pytest-cov==7.1.0",
     "ruff==0.17.3",
 ]
 
@@ -56,4 +57,20 @@ warn_unreachable = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers", "--strict-config"]
+# --cov measures src/tenderscreen on every run, and [tool.coverage.report]
+# fail_under fails the run below 90% line coverage. To run a subset of tests
+# without the coverage gate: pytest --no-cov tests/<path>
+addopts = ["-ra", "--strict-markers", "--strict-config", "--cov"]
+
+[tool.coverage.run]
+source_pkgs = ["tenderscreen"]
+
+[tool.coverage.report]
+fail_under = 90
+# coverage.py rounds the total to `precision` digits before comparing it with
+# fail_under; with the default of 0, 89.5% would round up and pass.
+precision = 2
+# Count modules in src/ folders that lack __init__.py instead of skipping them.
+include_namespace_packages = true
+show_missing = true
+skip_covered = true
