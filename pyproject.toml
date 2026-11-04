@@ -8,7 +8,10 @@ version = "0.1.0"
 description = "Reads Indian government tender and award notices and extracts structured fields."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+# Exact pins, like the dev tools below; Dependabot proposes upgrades weekly.
+dependencies = [
+    "tzdata==2026.6",  # IST without system timezone files (zoneinfo falls back to it)
+]
 
 [project.optional-dependencies]
 # Exact pins so the cloud VM and CI run identical tool versions.

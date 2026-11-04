@@ -6,8 +6,8 @@ Re-read this file before starting each task.
 ## Progress
 
 - [x] Setup: branch, environment, docs/decisions.md
-- [ ] TASK A: Quality gates
-- [ ] TASK B: Indian money and date parsing
+- [x] TASK A: Quality gates
+- [x] TASK B: Indian money and date parsing
 - [ ] TASK C: PDF text extraction and OCR
 - [ ] TASK D: Document store with dedupe and caching
 - [ ] TASK E: Evaluation harness
