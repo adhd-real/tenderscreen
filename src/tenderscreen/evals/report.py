@@ -37,14 +37,18 @@ class Inventory:
 
 
 def plain(text: str, limit: int = _MAX_SHOWN) -> str:
-    """Text made safe for one Markdown table cell or list item, and shortened."""
+    """Text flattened to one line for a table cell, and shortened.
+
+    Pipes and backticks are replaced, so the text cannot end a cell or a code
+    span; it still needs ``code()`` around it before it goes into the report.
+    """
     flat = " ".join(text.split()).replace("|", "/").replace("`", "'")
     return flat if len(flat) <= limit else flat[: limit - 3] + "..."
 
 
-def code(text: str) -> str:
-    """A name (field, document) as inline code that cannot break the Markdown."""
-    return f"`{plain(text, _MAX_NAME)}`"
+def code(text: str, limit: int = _MAX_NAME) -> str:
+    """Text from a file as inline code: links, images and HTML in it stay literal."""
+    return f"`{plain(text, limit)}`"
 
 
 def _percent(ratio: float | None) -> str:
@@ -78,13 +82,13 @@ def show(field: str, answer: Answer | None) -> str:
     if is_private_field(field):
         return "(hidden: contact data)"
     if field_kind(field) is FieldKind.MONEY and isinstance(answer.value, int):
-        return f"{format_paise(answer.value)} (p. {answer.source_page})"
-    return f"{plain(str(answer.raw_value))} (p. {answer.source_page})"
+        return f"{plain(format_paise(answer.value))} (p. {answer.source_page})"
+    return f"{code(str(answer.raw_value), _MAX_SHOWN)} (p. {answer.source_page})"
 
 
 def show_detail(field: str, detail: str) -> str:
     """Why a prediction is invalid or unreadable; never contact data, never long."""
-    return "(details hidden: contact data)" if is_private_field(field) else plain(detail, 120)
+    return "(details hidden: contact data)" if is_private_field(field) else code(detail, 120)
 
 
 def _stats_row(name: str, kind: str, stats: FieldStats) -> str:
@@ -113,8 +117,8 @@ def render_markdown(
     lines = [
         "# Extraction evaluation",
         "",
-        f"- Labels: `{inventory.labels_dir}` ({inventory.labelled} documents)",
-        f"- Predictions: `{inventory.predictions_dir}` ({inventory.predicted} files)",
+        f"- Labels: {code(inventory.labels_dir, 200)} ({inventory.labelled} documents)",
+        f"- Predictions: {code(inventory.predictions_dir, 200)} ({inventory.predicted} files)",
         f"- Generated: {generated_at.isoformat(timespec='seconds')}",
         "",
         "## Per field",
@@ -134,7 +138,7 @@ def render_markdown(
             for f in inventory.unlabelled_fields
         ),
         *(
-            f"Document name differs (check the pairing): {plain(m, 200)}"
+            f"Document name differs (check the pairing): {code(m, 200)}"
             for m in inventory.document_mismatches
         ),
     ]

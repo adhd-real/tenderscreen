@@ -1,6 +1,7 @@
 """Acceptance tests: perfect, wrong, invented and missed fields (Task E)."""
 
 import json
+import os
 import runpy
 import sys
 from datetime import datetime
@@ -9,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from tenderscreen.evals import Outcome, evaluate
-from tenderscreen.evals.run import LabelsError, main, write_outputs
+from tenderscreen.evals.run import LabelsError, main, printable, write_outputs
 from tenderscreen.ist import IST
 from tests.evals.dataset import LABELS, NOT_FOUND, answer, write_folder
 
@@ -254,3 +255,45 @@ def test_matching_or_blank_document_names_are_not_mismatches(
     data["document"] = ""  # a blank name is a file problem, not a pairing problem
     (pred / "award_b.json").write_text(json.dumps(data), encoding="utf-8")
     assert evaluate(labels_dir, pred).inventory.document_mismatches == []
+
+
+# Found in the review of the fixes.
+
+
+def test_lone_surrogate_in_a_prediction_is_scored_invalid(
+    labels_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pred = write_folder(tmp_path / "pred", {"award_a": LABELS["award_a"]})
+    (pred / "award_b.json").write_text(
+        '{"document": "award_b.pdf", "fields": {"successful_bidder_name": '
+        '{"value": "Example\\ud800", "source_page": 1, "quote": "q"}}}',
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+    assert main([str(labels_dir), str(pred), "--out", str(out)]) == 0
+    capsys.readouterr()
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert summary["overall"]["invalid"] == 6  # every award_b field
+    assert "half a character" in (out / "report.md").read_text(encoding="utf-8")
+
+
+def test_undecodable_file_name_cannot_crash_the_report(
+    labels_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pred = write_folder(tmp_path / "pred", LABELS)
+    odd = pred / (os.fsdecode(b"stray\xff") + ".json")  # not UTF-8: Python keeps a surrogate
+    odd.write_text(json.dumps({"document": "x.pdf", "fields": {}}), encoding="utf-8")
+    out = tmp_path / "out"
+    assert main([str(labels_dir), str(pred), "--out", str(out)]) == 0
+    printed = capsys.readouterr().out
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert "Prediction without labels (ignored): `stray\\udcff`" in report
+    assert "`stray\\udcff`" in printed
+    summary = (out / "summary.json").read_text(encoding="utf-8")
+    assert '"stray\\udcff"' in summary  # a JSON escape: valid UTF-8 text
+    assert json.loads(summary)["documents"]["without_label"] == [os.fsdecode(b"stray\xff")]
+
+
+def test_printable_escapes_only_what_cannot_be_written() -> None:
+    assert printable("Synthetic Builders, ₹ 5, निविदा") == "Synthetic Builders, ₹ 5, निविदा"
+    assert printable("bad\udcffname") == "bad\\udcffname"

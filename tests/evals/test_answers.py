@@ -1,4 +1,5 @@
 import json
+import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -8,7 +9,9 @@ from tenderscreen.evals.answers import (
     MAX_FILE_BYTES,
     AnswerFileError,
     Found,
+    InputEchoError,
     NotFound,
+    UnreadableValueError,
     _field_error,
     _no_constants,
     _no_duplicates,
@@ -285,6 +288,70 @@ def test_no_duplicates_and_no_constants() -> None:
 
 def test_field_error_is_short_and_private_fields_are_hidden() -> None:
     assert _field_error("award_date", ValueError("x" * 500)) == "x" * 200
-    assert _field_error("mobile", ValueError("0000")) == (
+    assert _field_error("mobile", InputEchoError("0000")) == (
         "invalid answer (details hidden: contact data)"
     )
+    assert _field_error("mobile", UnreadableValueError("0000")) == (
+        "invalid answer (details hidden: contact data)"
+    )
+    # A message that repeats nothing from the file is shown, even for contact fields.
+    assert _field_error("mobile", ValueError("still says TODO")) == "still says TODO"
+
+
+# Found in the review of the fixes.
+
+
+def test_value_errors_and_citation_errors_are_told_apart() -> None:
+    with pytest.raises(UnreadableValueError, match="not a money amount"):
+        parse_answer("emd_paise", found(value="about five lakh"))
+    with pytest.raises(InputEchoError, match="source_page must be") as caught:
+        parse_answer("emd_paise", found(page="2"))
+    assert not isinstance(caught.value, UnreadableValueError)
+    with pytest.raises(ValueError, match="quote must be") as quote_error:
+        parse_answer("emd_paise", found(quote=""))
+    assert not isinstance(quote_error.value, InputEchoError)
+
+
+def test_bad_citation_with_a_readable_value_is_not_a_claim(tmp_path: Path) -> None:
+    """A correct value with "source_page": "1" was scored wrong; it is malformed."""
+    path = write(
+        tmp_path / "p.json",
+        {
+            "document": "p.pdf",
+            "fields": {
+                "emd_paise": found(page="1"),
+                "award_date": found(value="15/10/2026", quote=""),
+                "pbg_percentage": found(value="five"),
+            },
+        },
+    )
+    parsed = parse_file(path)
+    assert parsed.claimed == frozenset({"pbg_percentage"})
+    assert set(parsed.field_errors) == {"emd_paise", "award_date", "pbg_percentage"}
+
+
+def test_lone_surrogate_is_a_clean_file_error(tmp_path: Path) -> None:
+    path = tmp_path / "p.json"
+    path.write_text(
+        '{"document": "p.pdf", "fields": {"tender_id": '
+        '{"value": "XYZ\\ud800", "source_page": 1, "quote": "q"}}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(AnswerFileError, match="half a character"):
+        parse_file(path)
+
+
+def test_read_json_accepts_paired_surrogates(tmp_path: Path) -> None:
+    path = tmp_path / "emoji.json"
+    path.write_text('{"a": "\\ud83d\\ude00"}', encoding="utf-8")
+    assert _read_json(path) == {"a": "\N{GRINNING FACE}"}
+
+
+def test_many_keys_are_checked_quickly() -> None:
+    """The first duplicate check was quadratic: 80,000 keys took a minute."""
+    pairs = [(f"k{i}", i) for i in range(200_000)]
+    started = time.perf_counter()
+    assert len(_no_duplicates(pairs)) == 200_000
+    assert time.perf_counter() - started < 5  # well under 1 s now; hours before
+    with pytest.raises(ValueError, match="repeated key 'k7'"):
+        _no_duplicates([*pairs[:10], ("k7", 0)])

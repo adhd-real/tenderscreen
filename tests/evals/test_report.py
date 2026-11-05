@@ -48,10 +48,10 @@ def test_markdown_has_table_explanations_and_mistakes(tmp_path: Path) -> None:
     assert "| **All fields** |" in markdown
     assert "- **Invented**: the label says not_found" in markdown
     assert "### `award_a`" in markdown
-    assert "Wrong / Name Ltd (p. 2)" in markdown  # pipes escaped for the table
-    assert "| `number_of_bids` | invented | not_found | 9 (p. 1) |" in markdown
+    assert "`Wrong / Name Ltd` (p. 2)" in markdown  # pipes escaped for the table
+    assert "| `number_of_bids` | invented | not_found | `9` (p. 1) |" in markdown
     assert (
-        "| `pbg_percentage` | invalid | 5 (p. 1) | invalid: field missing from prediction |"
+        "| `pbg_percentage` | invalid | `5` (p. 1) | invalid: `field missing from prediction` |"
         in markdown
     )
 
@@ -93,9 +93,9 @@ def test_show() -> None:
     assert show("emd_paise", None) == "(none)"
     assert show("emd_paise", NotFound()) == "not_found"
     assert show("emd_paise", Found("Rs. 5", 500, 3, "q")) == "\u20b9 5.00 (p. 3)"
-    assert show("tender_id", Found("ABC/2026", "abc/2026", 3, "q")) == "ABC/2026 (p. 3)"
+    assert show("tender_id", Found("ABC/2026", "abc/2026", 3, "q")) == "`ABC/2026` (p. 3)"
     long = Found("x" * 100, "x" * 100, 1, "q")
-    assert show("name", long) == "x" * 57 + "... (p. 1)"
+    assert show("name", long) == "`" + "x" * 57 + "...` (p. 1)"
     assert show("contact_phone", Found("0000", "0000", 1, "q")) == "(hidden: contact data)"
 
 
@@ -131,8 +131,8 @@ def test_code_cannot_break_out_of_inline_code_or_a_table() -> None:
 
 
 def test_show_detail_hides_contact_data_and_shortens() -> None:
-    assert show_detail("award_date", "not a date") == "not a date"
-    assert show_detail("award_date", "z" * 200) == "z" * 117 + "..."
+    assert show_detail("award_date", "not a date") == "`not a date`"
+    assert show_detail("award_date", "z" * 200) == "`" + "z" * 117 + "...`"
     assert show_detail("contact_phone", "0000-111111") == "(details hidden: contact data)"
 
 
@@ -188,7 +188,7 @@ def test_hostile_names_and_values_stay_inside_their_cells(tmp_path: Path) -> Non
     args = (evaluation.results, evaluation.per_field, evaluation.overall, evaluation.inventory)
     markdown = render_markdown(*args, WHEN)
     assert "\n## Injected heading" not in markdown
-    row = "| `tender_id` | wrong | T-1 (p. 1) | T-2 / ## Injected heading 'code' (p. 1) |"
+    row = "| `tender_id` | wrong | `T-1` (p. 1) | `T-2 / ## Injected heading 'code'` (p. 1) |"
     assert row in markdown
     assert "- Predicted field not in labels (ignored): `doc: x/y # z`" in markdown
 
@@ -198,7 +198,8 @@ def test_unreadable_and_invalid_details_are_shown_safely(tmp_path: Path) -> None
     predictions["award_a"]["award_date"] = answer("within 21 days of LoA")  # unreadable
     predictions["award_a"]["contact_details"] = answer(None)  # invalid contact value
     markdown, _ = render(tmp_path, predictions)
-    assert "| `award_date` | wrong | 15/10/2026 (p. 1) | unreadable value: not a date" in markdown
+    row = "| `award_date` | wrong | `15/10/2026` (p. 1) | `unreadable value: not a date"
+    assert row in markdown
     assert "| `contact_details` | wrong | (hidden: contact data) |" in markdown
     assert "(details hidden: contact data) |" in markdown
     assert "None" not in markdown.split("## Mistakes by document")[1]
@@ -214,7 +215,35 @@ def test_document_name_mismatch_is_a_problem(tmp_path: Path) -> None:
     args = (evaluation.results, evaluation.per_field, evaluation.overall, evaluation.inventory)
     markdown = render_markdown(*args, WHEN)
     assert (
-        "- Document name differs (check the pairing): award_a: label names award_a.pdf, "
-        "prediction names other/file.pdf" in markdown
+        "- Document name differs (check the pairing): `award_a: label names award_a.pdf, "
+        "prediction names other/file.pdf`" in markdown
     )
     assert summary_json(*args, WHEN)["document_mismatches"] == 1
+
+
+# Found in the review of the fixes.
+
+
+def test_links_and_html_in_values_stay_literal(tmp_path: Path) -> None:
+    hostile = "[Verify bid](https://evil.example/x) <img src=x>"
+    labels = write_folder(tmp_path / "labels", {"doc": {"tender_id": answer("T-1")}})
+    predictions = write_folder(tmp_path / "pred", {"doc": {"tender_id": answer(hostile)}})
+    evaluation = evaluate(labels, predictions)
+    args = (evaluation.results, evaluation.per_field, evaluation.overall, evaluation.inventory)
+    markdown = render_markdown(*args, WHEN)
+    assert f"| `{hostile}` (p. 1) |" in markdown  # inside a code span: rendered as text
+    assert markdown.count("evil.example") == 1
+
+
+def test_huge_money_is_shortened() -> None:
+    huge = 10**300
+    shown = show("contract_value_paise", Found(huge, huge, 1, "q"))
+    assert shown.endswith("... (p. 1)")
+    assert len(shown) == 60 + len(" (p. 1)")
+
+
+def test_input_folders_are_shown_as_code(tmp_path: Path) -> None:
+    labels = write_folder(tmp_path / "la`bels", LABELS)
+    evaluation = evaluate(labels, write_folder(tmp_path / "pred", LABELS))
+    args = (evaluation.results, evaluation.per_field, evaluation.overall, evaluation.inventory)
+    assert f"- Labels: `{tmp_path}/la'bels` (2 documents)" in render_markdown(*args, WHEN)

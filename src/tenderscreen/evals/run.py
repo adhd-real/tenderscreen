@@ -101,16 +101,23 @@ def evaluate(labels_dir: Path, predictions_dir: Path) -> Evaluation:
     return Evaluation(results, per_field, overall, inventory)
 
 
+def printable(text: str) -> str:
+    """Text that can always be written as UTF-8.
+
+    Python keeps undecodable bytes in file names as lone surrogates, which cannot
+    be encoded; they become visible escapes (``\\udcff``) instead of a crash.
+    """
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
 def write_outputs(evaluation: Evaluation, out_dir: Path, generated_at: datetime) -> str:
     """Write report.md and summary.json; return the Markdown."""
     args = (evaluation.results, evaluation.per_field, evaluation.overall, evaluation.inventory)
-    markdown = render_markdown(*args, generated_at)
-    summary = summary_json(*args, generated_at)
+    markdown = printable(render_markdown(*args, generated_at))
+    summary = printable(json.dumps(summary_json(*args, generated_at), indent=2, ensure_ascii=False))
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "report.md").write_text(markdown, encoding="utf-8")
-    (out_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    (out_dir / "summary.json").write_text(summary + "\n", encoding="utf-8")
     return markdown
 
 

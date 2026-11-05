@@ -39,6 +39,14 @@ _FOUND_KEYS: Final = frozenset({"value", "source_page", "quote"})
 _NOT_FOUND: Final = {"status": "not_found"}
 
 
+class InputEchoError(ValueError):
+    """A field error whose message repeats part of the input (hidden for contact fields)."""
+
+
+class UnreadableValueError(InputEchoError):
+    """The answer is well formed, but its value does not parse for the field's kind."""
+
+
 class AnswerFileError(Exception):
     """An answers file is malformed. ``problems`` lists every issue found."""
 
@@ -91,7 +99,7 @@ def parse_answer(name: str, raw: object, *, label: bool = False) -> Answer:
     if any(is_todo(part) for part in (value, page, quote)):
         raise ValueError("still says TODO: fill it in, or mark it not_found")
     if not isinstance(page, int) or isinstance(page, bool) or page < 1:
-        raise ValueError(f"source_page must be a page number from 1, not {page!r}")
+        raise InputEchoError(f"source_page must be a page number from 1, not {page!r}")
     if not isinstance(quote, str) or not quote.strip():
         raise ValueError("quote must be the exact text from the page, not empty")
     kind = field_kind(name)
@@ -100,7 +108,10 @@ def parse_answer(name: str, raw: object, *, label: bool = False) -> Answer:
             'write money as text, for example "Rs. 25,00,000" '
             "(a bare number would be read as paise)"
         )
-    return Found(value, comparable(kind, value), page, quote)
+    try:
+        return Found(value, comparable(kind, value), page, quote)
+    except ValueError as exc:
+        raise UnreadableValueError(str(exc)) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,17 +123,20 @@ class ParsedFile:
     answers: dict[str, Answer]
     field_errors: dict[str, str]
     problems: list[str]
-    # Fields shaped as a found answer whose value could not be read: the file
-    # claims a value exists, which matters when the label says not_found.
+    # Well-formed answers whose value could not be read: the file claims a
+    # value exists, which matters when the label says not_found. A malformed
+    # citation (page, quote) is not a claim; that field is simply invalid.
     claimed: frozenset[str] = frozenset()
 
 
 def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    keys = [key for key, _ in pairs]
-    repeated = sorted({key for key in keys if keys.count(key) > 1})
-    if repeated:
-        raise ValueError(f"repeated key {repeated[0]!r}")
-    return dict(pairs)
+    """A JSON object, refusing a repeated key (one pass: a 5 MB file stays fast)."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"repeated key {key!r}")
+        result[key] = value
+    return result
 
 
 def _no_constants(name: str) -> object:
@@ -133,12 +147,19 @@ def _read_json(path: Path) -> Any:
     if path.stat().st_size > MAX_FILE_BYTES:
         raise AnswerFileError(path, [f"larger than {MAX_FILE_BYTES} bytes"])
     try:
-        return json.loads(
+        data = json.loads(
             path.read_text(encoding="utf-8-sig"),  # tolerate a byte-order mark
             parse_float=Decimal,  # no float ever enters, so money stays exact
             parse_constant=_no_constants,  # NaN and Infinity are refused
             object_pairs_hook=_no_duplicates,  # the last of two "value" keys must not win
         )
+        # JSON may spell a lone surrogate ("\ud800"), which is not text and
+        # cannot be written to the report: UnicodeEncodeError is a ValueError.
+        json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
+        return data
+    except UnicodeEncodeError as exc:
+        problem = "not valid UTF-8 JSON: a \\u escape spells half a character (e.g. \\ud800)"
+        raise AnswerFileError(path, [problem]) from exc
     except (UnicodeDecodeError, ValueError, ArithmeticError, RecursionError) as exc:
         detail = str(exc)[:MAX_ERROR_CHARS] or type(exc).__name__
         raise AnswerFileError(path, [f"not valid UTF-8 JSON: {detail}"]) from exc
@@ -146,7 +167,7 @@ def _read_json(path: Path) -> Any:
 
 def _field_error(name: str, exc: ValueError) -> str:
     """The reason a field failed, without ever echoing contact data."""
-    if is_private_field(name):
+    if is_private_field(name) and isinstance(exc, InputEchoError):
         return "invalid answer (details hidden: contact data)"
     return str(exc)[:MAX_ERROR_CHARS]
 
@@ -175,7 +196,7 @@ def parse_file(path: Path, *, label: bool = False) -> ParsedFile:
             answers[name] = parse_answer(name, raw, label=label)
         except ValueError as exc:
             errors[name] = _field_error(name, exc)
-            if isinstance(raw, dict) and set(raw) == _FOUND_KEYS:
+            if isinstance(exc, UnreadableValueError):
                 claimed.add(name)
     return ParsedFile(path.stem, document, answers, errors, problems, frozenset(claimed))
 

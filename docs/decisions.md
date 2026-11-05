@@ -484,8 +484,10 @@ fixed and tested:
 - **Contact data**: error messages and the report's "invalid" details for
   contact-like fields never repeat the value, and every detail is shortened.
 - **Markdown injection**: field names, document names and values are flattened
-  to one line, with `|` and backticks replaced, so a crafted prediction cannot
-  add rows, headings or links to the report.
+  to one line, with `|` and backticks replaced, and shown as inline code, so a
+  crafted prediction cannot add rows, headings, links, images or HTML to the
+  report. (The first fix only flattened them; links and `<img>` still rendered.
+  Found in the review of the fixes.)
 - **Labels write money as text**: a bare number in a label is refused, because
   it would be read as paise (`2500` would mean ₹ 25). Predictions may still give
   integer paise, since the pipeline stores int paise.
@@ -508,6 +510,23 @@ fixed and tested:
 - docs/labelling.md now covers JSON punctuation (commas, `\"`, joining
   multi-line quotes), the template field-name check, money as text, and that a
   cloud session sees labels only once they are on `main`.
+
+### Found in the review of the Task E fixes (fixed in a follow-up commit)
+
+- **A lone surrogate crashed the run**: JSON may spell half a character
+  (`"\ud800"`), which cannot be written as UTF-8; the report was left empty and
+  the run exited 1. Such a file is now invalid ("a \u escape spells half a
+  character"), and the report writer escapes anything unwritable, such as
+  undecodable bytes in a file name, instead of crashing.
+- **The repeated-key check was quadratic**: 80,000 keys took a minute, and a
+  file at the 5 MB cap would have taken over half an hour. It is one pass now.
+- **A malformed citation is not a claim**: a correct value with
+  `"source_page": "1"` or an empty quote was scored **wrong**. Only a value that
+  cannot be read counts as claimed (invented or wrong); a bad page or quote
+  makes the field invalid.
+- Contact fields hide only error messages that repeat the input (the value or
+  the page); "still says TODO" is shown for them too.
+- Money in the report is shortened like other values.
 
 ## Task F: Data check kit
 
