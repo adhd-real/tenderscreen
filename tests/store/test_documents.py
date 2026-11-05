@@ -54,7 +54,10 @@ def test_fetch_time_is_stored_in_ist(store: DocumentStore) -> None:
 
 def test_identical_bytes_are_stored_once_with_every_source(store: DocumentStore) -> None:
     first = store.save_document(PDF, URL_A, WHEN)
+    before = first.path.stat()
     second = store.save_document(PDF, URL_B, datetime(2026, 10, 16, tzinfo=IST))
+    after = second.path.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)  # not rewritten
     assert first.sha256 == second.sha256
     assert stored_files(store) == [first.sha256]
     assert [s.url for s in second.sources] == [URL_A, URL_B]
@@ -146,6 +149,9 @@ def test_sha256_file_matches_bytes(tmp_path: Path) -> None:
         (b"\xef\xbb\xbf  <!DOCTYPE html><html>", "text/html"),
         (b"<HTML><body>notice</body>", "text/html"),
         (b"<?xml version='1.0'?><a/>", "application/xml"),
+        (b"<!-- saved from url=(0040)https://eprocure.gov.in/ -->\n<html>", "text/html"),
+        (b"<head><title>AOC</title></head>", "text/html"),
+        (b"<?xml version='1.0'?>\n<!DOCTYPE html><html xmlns='x'>", "text/html"),
         ("निविदा सूचना".encode(), "text/plain"),
         (b"", "text/plain"),
         (b"text with \x00 nul", "application/octet-stream"),
@@ -154,3 +160,21 @@ def test_sha256_file_matches_bytes(tmp_path: Path) -> None:
 )
 def test_sniff_content_type(content: bytes, expected: str) -> None:
     assert sniff_content_type(content) == expected
+
+
+def test_directory_that_cannot_be_opened_is_not_fatal(tmp_path: Path) -> None:
+    from tenderscreen.store import documents
+
+    documents._sync_directory(tmp_path / "no-such-folder")  # returns quietly
+
+
+def test_directory_fsync_refusal_is_not_fatal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from tenderscreen.store import documents
+
+    def cannot_sync(fd: int) -> None:
+        raise OSError("fsync not supported on directories here")
+
+    monkeypatch.setattr("tenderscreen.store.documents.os.fsync", cannot_sync)
+    documents._sync_directory(tmp_path)

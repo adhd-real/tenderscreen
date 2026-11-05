@@ -30,11 +30,30 @@ def test_source_refuses_naive_fetch_time() -> None:
 
 
 @pytest.mark.parametrize(
-    "url", ["", "no-scheme.pdf", "has space://x", "https://x/" + "a" * 2048, "1http://x"]
+    "url",
+    [
+        "",
+        "no-scheme.pdf",
+        "has space://x",
+        "https://x/" + "a" * 2048,
+        "1http://x",
+        "javascript:alert(1)",
+        "data:application/pdf;base64,AAAA",
+        "svn+ssh://example.org/repo",
+        "https://example.org/a\x00.pdf",
+        "https://example.org/\u202egnp.pdf",
+    ],
 )
 def test_source_refuses_bad_urls(url: str) -> None:
     with pytest.raises(ValueError, match="URL"):
         Source(url, datetime(2026, 10, 15, tzinfo=IST))
+
+
+@pytest.mark.parametrize(
+    "url", ["https://eprocure.gov.in/x.pdf", "http://example.org/a", "HTTPS://example.org/b"]
+)
+def test_source_accepts_web_urls(url: str) -> None:
+    assert Source(url, datetime(2026, 10, 15, tzinfo=IST)).url == url
 
 
 def test_source_accepts_non_http_schemes_for_manual_uploads() -> None:

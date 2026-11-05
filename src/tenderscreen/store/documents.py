@@ -73,7 +73,11 @@ def sniff_content_type(content: bytes) -> str:
     if b"%PDF-" in head:
         return "application/pdf"
     text = head.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
-    if text.startswith((b"<!doctype html", b"<html")):
+    # Saved web pages often start with a comment ("<!-- saved from url=...") or
+    # an XML prolog (XHTML), so look for HTML markers anywhere in the first 1 KB.
+    if text.startswith(b"<") and any(
+        marker in text for marker in (b"<!doctype html", b"<html", b"<head", b"<body")
+    ):
         return "text/html"
     if text.startswith(b"<?xml"):
         return "application/xml"
@@ -107,8 +111,8 @@ class DocumentStore:
         source = Source(source_url, fetched_at)  # validates the URL; refuses naive times
         sha256 = sha256_bytes(content)
         self._write_once(sha256, content)
-        self._backend.record_document(sha256, len(content), sniff_content_type(content), now_ist())
-        self._backend.add_source(sha256, source)
+        content_type = sniff_content_type(content)
+        self._backend.record_document(sha256, len(content), content_type, now_ist(), source)
         return self.require(sha256)
 
     def get(self, sha256: str) -> StoredDocument | None:
@@ -158,3 +162,18 @@ class DocumentStore:
         except BaseException:
             Path(temp_name).unlink(missing_ok=True)
             raise
+        _sync_directory(self.root)
+
+
+def _sync_directory(directory: Path) -> None:
+    """Make a rename in ``directory`` durable (POSIX; a no-op where unsupported)."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass  # some filesystems refuse fsync on a directory; the data itself is synced
+    finally:
+        os.close(fd)

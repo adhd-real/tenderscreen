@@ -7,6 +7,8 @@
 # NOTE: data/manual/ is deliberately NOT ignored; it holds public tender
 # documents uploaded through GitHub for cloud sessions to read.
 data/raw/
+# The store's default folder is relative to where it runs; ignore it anywhere.
+**/data/raw/
 
 # Evaluation outputs (python -m tenderscreen.evals writes here by default).
 eval-results/

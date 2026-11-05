@@ -42,10 +42,10 @@ def _page(raw: Any, expected_number: int) -> PageText:
     if not isinstance(text, str):
         raise ValueError(f"page {expected_number}: text is not a string")
     if confidence is not None and (
-        type(confidence) not in (int, float) or not math.isfinite(confidence)
-        or not 0 <= confidence <= 100
-    ):  # fmt: skip
-        raise ValueError(f"page {expected_number}: bad ocr_confidence {confidence!r}")
+        type(confidence) not in (int, float) or not 0 <= confidence <= 100
+        or not math.isfinite(confidence)
+    ):  # fmt: skip  # range first: isfinite() overflows on a 400-digit int
+        raise ValueError(f"page {expected_number}: bad ocr_confidence {str(confidence)[:40]}")
     method = ExtractionMethod(raw["method"])  # ValueError if unknown
     if method is ExtractionMethod.TEXT_LAYER and confidence is not None:
         raise ValueError(f"page {expected_number}: a text-layer page has no OCR confidence")

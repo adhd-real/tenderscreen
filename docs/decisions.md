@@ -341,18 +341,25 @@ fixed and tested:
 ### Result cache
 
 - Key: (sha256, step name, step version). Each entry stores the payload bytes
-  and their sha256. On every read the checksum is verified and the payload must
-  decode and validate; otherwise the entry is deleted, counted in
-  `stats.discarded`, and the step runs again. Errors are never cached.
-- Storing a result for a new version deletes that document's older versions of
-  the step, so "changing a step's version invalidates its entries" holds per
-  document as it is reprocessed; `invalidate_step(step, keep_version)` purges a
-  step everywhere at once.
+  and a sha256 over the key *and* the payload. On every read the checksum is
+  verified and the payload must decode and validate; otherwise the entry is
+  deleted, counted in `stats.discarded`, and the step runs again. Errors are
+  never cached. The checksum catches damage and entries moved to another key;
+  it has no secret, so it does not stop someone who can write the database.
+- Changing a step's version invalidates its entries: they no longer match any
+  lookup. Old versions are kept (not deleted on the next store), because the
+  version includes settings and two callers with different settings would
+  otherwise evict each other's results on every call (found in review);
+  `invalidate_step(step, keep_version)` purges a step's other versions.
 - `extract_pages(path, cache=...)` uses step `extract_pages` with a version
-  string that includes the code version, the PDFium build, the Tesseract
-  version and every setting that changes the output (languages, thresholds,
-  DPI, ...). So upgrading Tesseract or changing a threshold recomputes, and
-  settings that cannot change the output (workers, time limits) do not.
+  string that includes the code version, the pypdfium2 and PDFium versions, the
+  Tesseract version plus a fingerprint of its full `--version` output and its
+  language data files, and every `ExtractionSettings` field except an explicit
+  exclusion list (`workers`, `tesseract_binary`); a test fails if a new setting
+  is added without deciding. Limits are not part of it, but a cached result is
+  still checked against today's page limit.
+- The file is hashed again after extraction; if it changed meanwhile, the pages
+  are returned but not cached under the old hash (found in review).
 - Cached pages are JSON with a strict decoder (exact keys, types, enum values,
   pages numbered 1..n). Anything else is treated as corrupt and recomputed.
 
@@ -451,3 +458,23 @@ fixed and tested:
   `records.csv` and `README.md` when listing documents). Writing these two files
   into data/manual/ was asked for; the uploaded documents themselves are only
   ever read (CLAUDE.md layout rule).
+
+### Found in the Task D review (fixed in a follow-up commit)
+
+- **Concurrent first opens could corrupt a new store**: the schema check
+  selected, then inserted, so several processes could write two version rows,
+  after which every open failed. The version table now has a single fixed row
+  (`id = 1`), setup runs in one `BEGIN IMMEDIATE` transaction, and "database is
+  locked" during setup is retried. WAL mode is set only once.
+- A document row and its source are now written in one transaction, and the
+  folder is fsynced after the atomic rename.
+- Every `sqlite3` error surfaces as `StoreError` (callers never depend on the
+  database library). The `StoreBackend` protocol has seven methods; a Postgres
+  version would use `BYTEA` instead of `BLOB`.
+- Any decode failure (not only `ValueError`) discards a cache entry; a huge
+  `ocr_confidence` no longer crashes the decoder.
+- Source URLs must be `http:`, `https:` or `file:` with no spaces or invisible
+  characters (`javascript:` and `data:` were accepted before).
+- Content sniffing recognises HTML that starts with a comment ("saved from
+  url"), with `<head>`, or as XHTML with an XML prolog.
+- `**/data/raw/` is ignored by git wherever the store is opened from.

@@ -2,10 +2,15 @@
 
 Timestamps are stored as ISO 8601 text with their +05:30 offset and the SQL is
 kept to what Postgres also accepts (``ON CONFLICT ... DO NOTHING/UPDATE``), so a
-Postgres backend can reuse the same statements with ``%s`` placeholders.
+Postgres backend can reuse the statements with ``%s`` placeholders (and
+``BYTEA`` instead of ``BLOB``). Every ``sqlite3`` error surfaces as
+``StoreError``, so callers never depend on the database library.
 """
 
 import sqlite3
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Final
@@ -15,32 +20,34 @@ from tenderscreen.store.errors import StoreError
 from tenderscreen.store.records import CacheEntry, CacheKey, DocumentRecord, Source
 
 SCHEMA_VERSION: Final = 1
-_SCHEMA: Final = """
-CREATE TABLE IF NOT EXISTS schema_info (
-    version INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS documents (
-    sha256 TEXT PRIMARY KEY CHECK (length(sha256) = 64),
-    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
-    content_type TEXT NOT NULL,
-    first_saved_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS document_sources (
-    sha256 TEXT NOT NULL REFERENCES documents (sha256),
-    source_url TEXT NOT NULL,
-    fetched_at TEXT NOT NULL,
-    PRIMARY KEY (sha256, source_url, fetched_at)
-);
-CREATE TABLE IF NOT EXISTS step_results (
-    sha256 TEXT NOT NULL,
-    step TEXT NOT NULL,
-    version TEXT NOT NULL,
-    payload BLOB NOT NULL,
-    checksum TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (sha256, step, version)
-);
-"""
+_SETUP_ATTEMPTS: Final = 20
+_TABLES: Final = (
+    """CREATE TABLE IF NOT EXISTS schema_info (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS documents (
+        sha256 TEXT PRIMARY KEY CHECK (length(sha256) = 64),
+        size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+        content_type TEXT NOT NULL,
+        first_saved_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS document_sources (
+        sha256 TEXT NOT NULL REFERENCES documents (sha256),
+        source_url TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (sha256, source_url, fetched_at)
+    )""",
+    """CREATE TABLE IF NOT EXISTS step_results (
+        sha256 TEXT NOT NULL,
+        step TEXT NOT NULL,
+        version TEXT NOT NULL,
+        payload BLOB NOT NULL,
+        checksum TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (sha256, step, version)
+    )""",
+)
 
 
 def _timestamp(moment: datetime) -> str:
@@ -51,17 +58,22 @@ def _from_timestamp(text: str) -> datetime:
     return to_ist(datetime.fromisoformat(text))
 
 
+@contextmanager
+def _errors(action: str) -> Iterator[None]:
+    """Turn any ``sqlite3`` error into ``StoreError``."""
+    try:
+        yield
+    except sqlite3.Error as exc:
+        raise StoreError(f"store database error while {action}: {exc}") from exc
+
+
 class SQLiteBackend:
     """Store metadata and step results in one SQLite file (or ``":memory:"``)."""
 
     def __init__(self, path: Path | str) -> None:
         self._conn = sqlite3.connect(path, timeout=30)
         try:
-            self._conn.execute("PRAGMA foreign_keys = ON")
-            if str(path) != ":memory:":
-                self._conn.execute("PRAGMA journal_mode = WAL")
-            self._conn.executescript(_SCHEMA)
-            self._check_schema_version()
+            self._setup(on_disk=str(path) != ":memory:")
         except sqlite3.DatabaseError as exc:
             self._conn.close()
             raise StoreError(f"{path} is not a usable store database: {exc}") from exc
@@ -69,28 +81,55 @@ class SQLiteBackend:
             self._conn.close()
             raise
 
-    def _check_schema_version(self) -> None:
-        rows = self._conn.execute("SELECT version FROM schema_info").fetchall()
-        if not rows:
-            with self._conn:
-                self._conn.execute(
-                    "INSERT INTO schema_info (version) VALUES (?)", (SCHEMA_VERSION,)
+    def _setup(self, *, on_disk: bool) -> None:
+        """Create the tables once, safely even when several processes open a new store.
+
+        A fresh database can be locked briefly by another process doing the same
+        setup; that is retried rather than reported.
+        """
+        for attempt in range(_SETUP_ATTEMPTS):
+            try:
+                self._conn.execute("PRAGMA foreign_keys = ON")
+                if on_disk:
+                    mode = self._conn.execute("PRAGMA journal_mode").fetchone()[0]
+                    if mode != "wal":
+                        self._conn.execute("PRAGMA journal_mode = WAL")
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for statement in _TABLES:
+                        self._conn.execute(statement)
+                    self._conn.execute(
+                        "INSERT INTO schema_info (id, version) VALUES (1, ?) "
+                        "ON CONFLICT (id) DO NOTHING",
+                        (SCHEMA_VERSION,),
+                    )
+                    (version,) = self._conn.execute(
+                        "SELECT version FROM schema_info WHERE id = 1"
+                    ).fetchone()
+                    self._conn.commit()
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == _SETUP_ATTEMPTS - 1:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+                continue
+            if version != SCHEMA_VERSION:
+                raise StoreError(
+                    f"store database has schema version {version}, expected {SCHEMA_VERSION}"
                 )
-        elif rows != [(SCHEMA_VERSION,)]:
-            raise StoreError(f"store database has schema version {rows}, expected {SCHEMA_VERSION}")
+            return
 
     def record_document(
-        self, sha256: str, size_bytes: int, content_type: str, saved_at: datetime
-    ) -> None:
-        with self._conn:
+        self, sha256: str, size_bytes: int, content_type: str, saved_at: datetime, source: Source
+    ) -> bool:
+        with _errors("recording a document"), self._conn:
             self._conn.execute(
                 "INSERT INTO documents (sha256, size_bytes, content_type, first_saved_at) "
                 "VALUES (?, ?, ?, ?) ON CONFLICT (sha256) DO NOTHING",
                 (sha256, size_bytes, content_type, _timestamp(saved_at)),
             )
-
-    def add_source(self, sha256: str, source: Source) -> bool:
-        with self._conn:
             cursor = self._conn.execute(
                 "INSERT INTO document_sources (sha256, source_url, fetched_at) "
                 "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
@@ -99,17 +138,18 @@ class SQLiteBackend:
         return cursor.rowcount == 1
 
     def get_document(self, sha256: str) -> DocumentRecord | None:
-        row = self._conn.execute(
-            "SELECT size_bytes, content_type, first_saved_at FROM documents WHERE sha256 = ?",
-            (sha256,),
-        ).fetchone()
-        if row is None:
-            return None
-        sources = self._conn.execute(
-            "SELECT source_url, fetched_at FROM document_sources WHERE sha256 = ? "
-            "ORDER BY fetched_at, source_url",
-            (sha256,),
-        ).fetchall()
+        with _errors("reading a document"):
+            row = self._conn.execute(
+                "SELECT size_bytes, content_type, first_saved_at FROM documents WHERE sha256 = ?",
+                (sha256,),
+            ).fetchone()
+            if row is None:
+                return None
+            sources = self._conn.execute(
+                "SELECT source_url, fetched_at FROM document_sources WHERE sha256 = ? "
+                "ORDER BY fetched_at, source_url",
+                (sha256,),
+            ).fetchall()
         return DocumentRecord(
             sha256=sha256,
             size_bytes=row[0],
@@ -119,11 +159,12 @@ class SQLiteBackend:
         )
 
     def get_entry(self, key: CacheKey) -> CacheEntry | None:
-        row = self._conn.execute(
-            "SELECT payload, checksum FROM step_results "
-            "WHERE sha256 = ? AND step = ? AND version = ?",
-            (key.sha256, key.step, key.version),
-        ).fetchone()
+        with _errors("reading a cached result"):
+            row = self._conn.execute(
+                "SELECT payload, checksum FROM step_results "
+                "WHERE sha256 = ? AND step = ? AND version = ?",
+                (key.sha256, key.step, key.version),
+            ).fetchone()
         if row is None:
             return None
         payload, checksum = row
@@ -132,11 +173,8 @@ class SQLiteBackend:
         return CacheEntry(payload=payload, checksum=checksum)
 
     def put_entry(self, key: CacheKey, entry: CacheEntry, created_at: datetime) -> None:
-        with self._conn:
-            self._conn.execute(
-                "DELETE FROM step_results WHERE sha256 = ? AND step = ? AND version <> ?",
-                (key.sha256, key.step, key.version),
-            )
+        """Store a result. Other versions stay (they simply never match this key)."""
+        with _errors("storing a cached result"), self._conn:
             self._conn.execute(
                 "INSERT INTO step_results (sha256, step, version, payload, checksum, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (sha256, step, version) DO UPDATE SET "
@@ -153,14 +191,14 @@ class SQLiteBackend:
             )
 
     def delete_entry(self, key: CacheKey) -> None:
-        with self._conn:
+        with _errors("deleting a cached result"), self._conn:
             self._conn.execute(
                 "DELETE FROM step_results WHERE sha256 = ? AND step = ? AND version = ?",
                 (key.sha256, key.step, key.version),
             )
 
     def delete_step_versions(self, step: str, keep_version: str) -> int:
-        with self._conn:
+        with _errors("deleting old cached results"), self._conn:
             cursor = self._conn.execute(
                 "DELETE FROM step_results WHERE step = ? AND version <> ?", (step, keep_version)
             )

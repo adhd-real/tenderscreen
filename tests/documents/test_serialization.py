@@ -63,6 +63,7 @@ def test_encoding_keeps_devanagari_readable() -> None:
         payload(page_dict(ocr_confidence=-1)),
         payload(page_dict(ocr_confidence="high")),
         payload(page_dict(ocr_confidence=True)),
+        payload(page_dict(ocr_confidence=10**400)),  # found in review: isfinite() overflowed
         payload(page_dict(method="text_layer", ocr_confidence=90.0)),
         b'{"format": 1, "pages": [{"page_number": 1, "text": "x", "method": "ocr", '
         b'"quality": "good", "ocr_confidence": NaN}]}',

@@ -1,9 +1,11 @@
 """extract_pages through the result cache (Task D acceptance, with Task C's code)."""
 
+import dataclasses
 import shutil
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,10 +16,15 @@ from tenderscreen.documents import (
     ExtractionSettings,
     FileTooLargeError,
     PageText,
+    TooManyPagesError,
     extract_pages,
 )
 from tenderscreen.documents import extract as extract_module
-from tenderscreen.documents.extract import EXTRACT_PAGES_STEP, step_version
+from tenderscreen.documents.extract import (
+    EXTRACT_PAGES_STEP,
+    SETTINGS_NOT_IN_VERSION,
+    step_version,
+)
 from tenderscreen.documents.ocr import Tesseract
 from tenderscreen.store import CacheKey, ResultCache, SQLiteBackend
 from tests.documents.fake_tesseract import write_fake_tesseract
@@ -91,8 +98,9 @@ def test_output_changing_setting_is_a_new_version(
     assert step_version(stricter) != step_version(NO_OCR)
     extract_pages(path, settings=stricter, cache=cache)
     assert counter.runs == 2
-    # The old version's entry was replaced, not kept.
-    assert run_sql(db, "SELECT version FROM step_results") == [(step_version(stricter),)]
+    # Both versions stay: a caller using either setting gets its own result.
+    versions = {version for (version,) in run_sql(db, "SELECT version FROM step_results")}
+    assert versions == {step_version(NO_OCR), step_version(stricter)}
 
 
 def test_settings_that_cannot_change_output_keep_the_cache(
@@ -172,8 +180,59 @@ def test_ocr_results_are_cached(
 def test_step_version_names_what_can_change_the_output(tmp_path: Path) -> None:
     fake = write_fake_tesseract(tmp_path, "exit 1")
     version = step_version(ExtractionSettings(tesseract_binary=str(fake)))
-    assert version.startswith("1;pdfium=")
-    assert "tesseract=tesseract 0.0.0-fake" in version
+    assert version.startswith("1;pypdfium2=")
+    assert "tesseract=tesseract 0.0.0-fake#" in version  # version plus fingerprint
+    assert ";pypdfium2=" in version
     assert "languages=eng+hin" in version
     assert "tesseract=none" in step_version(NO_OCR)
     assert EXTRACT_PAGES_STEP == "extract_pages"
+
+
+# Found in review.
+
+
+def test_file_changed_during_extraction_is_not_cached(
+    tmp_path: Path, cache: ResultCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file swapped mid-read must not have its pages cached under the old hash."""
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
+    real = extract_module._extract
+
+    def swap_during_read(
+        path: Path, limits: ExtractionLimits, settings: ExtractionSettings
+    ) -> list[PageText]:
+        pages = real(path, limits, settings)
+        build_pdf(path, [TextPage(), TextPage()])  # replaced while being processed
+        return pages
+
+    monkeypatch.setattr(extract_module, "_extract", swap_during_read)
+    extract_pages(path, settings=NO_OCR, cache=cache)
+    assert cache.stats.misses == 1
+    assert cache_keys(tmp_path / "store.sqlite3") == []
+
+
+def test_cached_result_still_respects_the_page_limit(tmp_path: Path, cache: ResultCache) -> None:
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()] * 3)
+    extract_pages(path, settings=NO_OCR, cache=cache)
+    with pytest.raises(TooManyPagesError, match="has 3 pages, over the limit of 2"):
+        extract_pages(path, limits=ExtractionLimits(max_pages=2), settings=NO_OCR, cache=cache)
+
+
+def test_every_output_setting_is_part_of_the_version() -> None:
+    """Found in review: removing a setting from the version kept all tests green."""
+    base = step_version(NO_OCR)
+    changed: dict[str, Any] = {
+        "languages": "eng",
+        "min_text_chars": 41,
+        "image_page_min_text_chars": 201,
+        "image_coverage_threshold": 0.6,
+        "ocr_dpi": 299,
+        "max_render_pixels": 49_000_000,
+        "min_ocr_confidence": 61.0,
+        "max_suspicious_share": 0.06,
+    }
+    names = {f.name for f in dataclasses.fields(ExtractionSettings)}
+    assert names == set(changed) | SETTINGS_NOT_IN_VERSION  # a new setting must be added here
+    for name, value in changed.items():
+        assert step_version(replace(NO_OCR, **{name: value})) != base, name
+    assert step_version(replace(NO_OCR, workers=9)) == base

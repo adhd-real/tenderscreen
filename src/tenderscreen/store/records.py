@@ -1,6 +1,7 @@
 """Plain records passed between the store and its storage backend."""
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
@@ -9,6 +10,7 @@ from tenderscreen.ist import to_ist
 
 _SHA256_HEX: Final = re.compile(r"[0-9a-f]{64}")
 MAX_URL_CHARS: Final = 2048
+SOURCE_SCHEMES: Final = frozenset({"http", "https", "file"})
 
 
 def check_sha256(value: str) -> str:
@@ -26,13 +28,24 @@ class Source:
     fetched_at: datetime  # timezone-aware, Asia/Kolkata
 
     def __post_init__(self) -> None:
-        url = self.url
-        if not url or len(url) > MAX_URL_CHARS or any(ch.isspace() for ch in url):
-            raise ValueError("source URL must be non-empty, under 2048 chars, with no spaces")
-        if ":" not in url or not url.split(":", 1)[0].isalpha():
-            raise ValueError(f"source URL needs a scheme such as https: {url[:80]!r}")
+        check_source_url(self.url)
         # Refuses naive datetimes and normalises any offset to IST.
         object.__setattr__(self, "fetched_at", to_ist(self.fetched_at))
+
+
+def check_source_url(url: str) -> None:
+    """Accept http, https and file URLs only, with no spaces or invisible characters.
+
+    file: covers documents uploaded by hand; anything else (javascript:, data:)
+    has no business being a document's source.
+    """
+    if not url or len(url) > MAX_URL_CHARS:
+        raise ValueError(f"source URL must be 1 to {MAX_URL_CHARS} characters")
+    if any(ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf") for ch in url):
+        raise ValueError(f"source URL has spaces or control characters: {url[:80]!r}")
+    scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+    if scheme not in SOURCE_SCHEMES:
+        raise ValueError(f"source URL must start with http:, https: or file:, not {url[:80]!r}")
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,11 +1,10 @@
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from tenderscreen.ist import IST
-from tenderscreen.store import DEFAULT_ROOT, open_store, save_document
+from tenderscreen.store import DEFAULT_ROOT, StoreError, open_store, save_document
 from tenderscreen.store.facade import DATABASE_NAME
 
 WHEN = datetime(2026, 10, 15, 17, 0, tzinfo=IST)
@@ -28,5 +27,5 @@ def test_save_document_function_uses_root(tmp_path: Path) -> None:
 def test_open_store_context_manager_closes(tmp_path: Path) -> None:
     with open_store(tmp_path / "nested" / "raw") as store:
         store.documents.save_document(b"abc", "https://example.org/a", WHEN)
-    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+    with pytest.raises(StoreError, match="closed"):
         store.documents.get("a" * 64)

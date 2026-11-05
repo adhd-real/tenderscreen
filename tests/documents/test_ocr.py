@@ -17,6 +17,7 @@ from tenderscreen.documents.ocr import (
     outcome_from_json,
     render_scale,
     require_tesseract,
+    tesseract_fingerprint,
 )
 from tenderscreen.documents.sandbox import Json
 from tests.documents.fake_tesseract import FAKE_TSV_HEADER, write_fake_tesseract
@@ -82,7 +83,13 @@ def test_find_tesseract_missing_binary() -> None:
 def test_find_tesseract_reads_version_and_languages(tmp_path: Path) -> None:
     fake = write_fake_tesseract(tmp_path, "exit 1", langs="eng\nhin\nosd")
     found = find_tesseract(str(fake))
-    assert found == Tesseract(str(fake), "tesseract 0.0.0-fake", frozenset({"eng", "hin", "osd"}))
+    assert found is not None
+    assert (found.path, found.version, found.languages) == (
+        str(fake),
+        "tesseract 0.0.0-fake",
+        frozenset({"eng", "hin", "osd"}),
+    )
+    assert len(found.fingerprint) == 16
 
 
 def test_find_tesseract_broken_binary(tmp_path: Path) -> None:
@@ -267,3 +274,20 @@ def test_outcome_from_json_accepts_a_valid_answer() -> None:
 def test_outcome_from_json_rejects_malformed_answers(bad: Json) -> None:
     with pytest.raises(ValueError, match="OCR answer"):
         outcome_from_json(bad)
+
+
+def test_fingerprint_changes_when_a_language_file_changes(tmp_path: Path) -> None:
+    model = tmp_path / "eng.traineddata"
+    model.write_bytes(b"model v1")
+    header = f'List of available languages in "{tmp_path}/" (1):\neng\n'
+    first = tesseract_fingerprint("tesseract 5", header, frozenset({"eng"}))
+    assert first == tesseract_fingerprint("tesseract 5", header, frozenset({"eng"}))
+    model.write_bytes(b"model version 2")
+    assert tesseract_fingerprint("tesseract 5", header, frozenset({"eng"})) != first
+    assert tesseract_fingerprint("tesseract 5.1", header, frozenset({"eng"})) != first
+
+
+def test_fingerprint_without_language_files_or_folder() -> None:
+    missing = tesseract_fingerprint("v", "List of languages (1):\neng\n", frozenset({"eng"}))
+    assert len(missing) == 16
+    assert tesseract_fingerprint("v", "", frozenset()) != missing

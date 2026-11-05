@@ -6,8 +6,10 @@ passed to the ``tesseract`` command-line program. Tesseract runs single-threaded
 and it gets a minimal environment: it needs nothing secret.
 """
 
+import hashlib
 import math
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -30,6 +32,10 @@ class Tesseract:
     path: str
     version: str
     languages: frozenset[str]
+    # Changes when anything that affects OCR output changes: the program and
+    # its libraries (full --version output), the language-data folder, or any
+    # installed language file. Part of the result-cache key.
+    fingerprint: str = ""
 
 
 # Successful lookups only: if Tesseract is installed later, the next call finds it.
@@ -62,8 +68,26 @@ def find_tesseract(binary: str = "tesseract") -> Tesseract | None:
         return None
     # --list-langs prints a header line ("List of available languages ...") first.
     langs = frozenset(line.strip() for line in languages.stdout.splitlines()[1:] if line.strip())
-    _found[binary] = Tesseract(path=path, version=version_lines[0], languages=langs)
+    fingerprint = tesseract_fingerprint(version.stdout + version.stderr, languages.stdout, langs)
+    _found[binary] = Tesseract(path, version_lines[0], langs, fingerprint)
     return _found[binary]
+
+
+def tesseract_fingerprint(
+    version_output: str, list_langs_output: str, langs: frozenset[str]
+) -> str:
+    """A short hash of Tesseract's full version output and its language data files."""
+    parts = [version_output, list_langs_output]
+    folder = re.search(r'"([^"]+)"', list_langs_output.splitlines()[0] if list_langs_output else "")
+    for lang in sorted(langs):
+        model = Path(folder.group(1) if folder else "") / f"{lang}.traineddata"
+        try:
+            stat = model.stat()
+        except OSError:
+            parts.append(f"{lang}:missing")
+        else:
+            parts.append(f"{lang}:{stat.st_size}:{stat.st_mtime_ns}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def require_tesseract(languages: str, binary: str = "tesseract") -> Tesseract:

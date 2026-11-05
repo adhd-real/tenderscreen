@@ -13,6 +13,7 @@ a script that calls this must keep its top-level code under
 ``if __name__ == "__main__":`` (``python -m ...`` entry points already do).
 """
 
+import dataclasses
 import shutil
 import tempfile
 import time
@@ -25,6 +26,7 @@ from tenderscreen.documents.errors import (
     DocumentTimeoutError,
     OcrFailedError,
     PageTimeoutError,
+    TooManyPagesError,
     WorkerStartError,
 )
 from tenderscreen.documents.models import (
@@ -73,26 +75,28 @@ EXTRACT_PAGES_STEP: Final = "extract_pages"
 EXTRACT_PAGES_VERSION: Final = "1"
 
 
+# Settings that cannot change extract_pages' output, so they are left out of the
+# cache key. Every other ExtractionSettings field is included automatically.
+SETTINGS_NOT_IN_VERSION: Final = frozenset({"workers", "tesseract_binary"})
+
+
 def step_version(settings: ExtractionSettings) -> str:
     """Everything that can change the output: code, PDFium, Tesseract, settings.
 
-    Settings that cannot change the output (workers, the Tesseract program's
-    path, time and memory limits) are left out, so changing them keeps the cache.
+    Time and memory limits and the settings in ``SETTINGS_NOT_IN_VERSION`` are
+    left out, so changing them keeps the cache.
     """
     tesseract = find_tesseract(settings.tesseract_binary)
+    tesseract_id = f"{tesseract.version}#{tesseract.fingerprint}" if tesseract else "none"
     parts = [
         EXTRACT_PAGES_VERSION,
+        f"pypdfium2={pypdfium2.version.PYPDFIUM_INFO}",
         f"pdfium={pypdfium2.version.PDFIUM_INFO}",
-        f"tesseract={tesseract.version if tesseract else 'none'}",
-        f"languages={settings.languages}",
-        f"min_text_chars={settings.min_text_chars}",
-        f"image_page_min_text_chars={settings.image_page_min_text_chars}",
-        f"image_coverage_threshold={settings.image_coverage_threshold}",
-        f"ocr_dpi={settings.ocr_dpi}",
-        f"max_render_pixels={settings.max_render_pixels}",
-        f"min_ocr_confidence={settings.min_ocr_confidence}",
-        f"max_suspicious_share={settings.max_suspicious_share}",
+        f"tesseract={tesseract_id}",
     ]
+    for field in dataclasses.fields(settings):
+        if field.name not in SETTINGS_NOT_IN_VERSION:
+            parts.append(f"{field.name}={getattr(settings, field.name)}")
     return ";".join(parts)
 
 
@@ -125,13 +129,19 @@ def extract_pages(
     if cache is None:
         return _extract(path, limits, settings)
     check_file(path, limits)  # the size limit applies before the file is read to hash it
-    key = CacheKey(sha256_file(path), EXTRACT_PAGES_STEP, step_version(settings))
-    return cache.get_or_compute(
-        key,
+    sha256 = sha256_file(path)
+    pages = cache.get_or_compute(
+        CacheKey(sha256, EXTRACT_PAGES_STEP, step_version(settings)),
         lambda: _extract(path, limits, settings),
         encode=encode_pages,
         decode=decode_pages,
+        # If the file changed while it was being read, its pages are not the
+        # pages of ``sha256``: return them, but never cache them under that hash.
+        keep=lambda _: sha256_file(path) == sha256,
     )
+    if len(pages) > limits.max_pages:  # a cached result must respect today's limits too
+        raise TooManyPagesError(path.name, len(pages), limits.max_pages)
+    return pages
 
 
 def _extract(path: Path, limits: ExtractionLimits, settings: ExtractionSettings) -> list[PageText]:
