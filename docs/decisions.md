@@ -277,6 +277,17 @@ fixed and tested:
   message, a forged page number, the whole-document limit, workers dying with a
   SIGKILLed parent, the environment a worker sees, and stopping time.
 
+### A race found by CI (fixed in a follow-up commit)
+
+- CI failed once on Python 3.12: a child stalled mid-message was killed by the
+  watchdog, but the parent reported "message over 4194304 bytes" instead of a
+  timeout. A dying process closes its pipe a moment before its parent can reap
+  it, so `is_alive()` could still say True. Now a cut-off message counts as a
+  death when the watchdog fired, or when the child exits within
+  `EXIT_GRACE_S` (1 s); only then is it treated as an oversized message. The
+  same race could have misreported a child that crashed mid-message. A test
+  forces `is_alive()` to say True and fails on the old code.
+
 ### Image coverage in page coordinates (found in review)
 
 - Coverage was computed against (0, 0, width, height) and with Form XObject

@@ -67,6 +67,12 @@ def stall_mid_message(conn: Connection) -> None:
     time.sleep(60)
 
 
+def die_mid_message(conn: Connection) -> None:
+    """A child target that starts a 100-byte message, sends 10 bytes, and exits."""
+    os.write(conn.fileno(), struct.pack("!i", 100) + b"0123456789")
+    os._exit(5)
+
+
 def report_environment(conn: Connection) -> None:
     """A child target that reports which environment variables it can see."""
     names: list[Json] = [*sorted(os.environ)]

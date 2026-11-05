@@ -34,6 +34,7 @@ from tenderscreen.documents.sandbox import (
 )
 from tests.documents.worker_tasks import (
     allocate,
+    die_mid_message,
     die_soon,
     fail,
     oversized,
@@ -381,6 +382,38 @@ def test_half_sent_message_cannot_hang_the_parent() -> None:
     with pytest.raises(ChildTimeoutError):
         child.receive(1.0)
     assert time.monotonic() - started < 10
+    child.stop()
+
+
+def test_watchdog_kill_is_a_timeout_even_while_the_child_still_looks_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Found by CI: the killed child's pipe closed before it could be reaped, so
+    ``is_alive()`` was still True and the timeout was misreported as an oversized
+    message. Here ``is_alive()`` always says True, as in that moment."""
+    child = start_child(stall_mid_message, (), None)
+    monkeypatch.setattr(child.process, "is_alive", lambda: True)
+    with pytest.raises(ChildTimeoutError):
+        child.receive(1.0)
+    monkeypatch.undo()
+    child.stop()
+
+
+@pytest.mark.parametrize("attempt", range(3))
+def test_child_that_dies_mid_message_is_a_death_not_a_size_error(attempt: int) -> None:
+    child = start_child(die_mid_message, (), None)
+    with pytest.raises(ChildDiedError, match="exited with code 5"):
+        child.receive(10.0)
+    child.stop()
+
+
+def test_has_exited_waits_briefly_for_a_dying_child() -> None:
+    child = start_child(silent, (), None)
+    started = time.monotonic()
+    assert not child._has_exited()  # alive: waits the full grace, then says so
+    assert time.monotonic() - started >= sandbox.EXIT_GRACE_S * 0.9
+    child.process.kill()
+    assert child._has_exited()
     child.stop()
 
 

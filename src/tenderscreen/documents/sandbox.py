@@ -44,6 +44,9 @@ MAX_MESSAGE_BYTES: Final = 4 * 1024 * 1024
 STARTUP_TIMEOUT_S: Final = 60.0
 # A message that has started to arrive gets at least this long to finish.
 MIN_READ_S: Final = 1.0
+# How long to wait for a child whose pipe closed mid-message to be reaped. A
+# dying process closes its pipe a moment before its parent can see it exit.
+EXIT_GRACE_S: Final = 1.0
 STOP_GRACE_S: Final = 0.5
 _KILL_JOIN_S: Final = 5.0
 # Child-supplied text in exception messages is cut to this length.
@@ -258,9 +261,18 @@ class Child:
         except (EOFError, ConnectionResetError):
             return None
         except OSError as exc:  # too long, or cut off by the child's death
-            if self.process.is_alive():
-                raise ChildProtocolError(f"message over {MAX_MESSAGE_BYTES} bytes") from exc
-            return None
+            if self._timed_out or self._has_exited():
+                return None  # killed by the watchdog, or died, mid-message
+            raise ChildProtocolError(f"message over {MAX_MESSAGE_BYTES} bytes") from exc
+
+    def _has_exited(self) -> bool:
+        """True if the child has exited, allowing ``EXIT_GRACE_S`` for it to be reaped.
+
+        Right after its pipe closes, a dying child can still look alive: checking
+        ``is_alive()`` at once misreported a death as an oversized message.
+        """
+        self.process.join(timeout=EXIT_GRACE_S)
+        return not self.process.is_alive()
 
     def _watchdog_kill(self) -> None:
         self._timed_out = True
