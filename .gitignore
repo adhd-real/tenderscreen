@@ -8,6 +8,9 @@
 # documents uploaded through GitHub for cloud sessions to read.
 data/raw/
 
+# Evaluation outputs (python -m tenderscreen.evals writes here by default).
+eval-results/
+
 # Virtual environment (created by .claude/hooks/session-start.sh)
 .venv/
 

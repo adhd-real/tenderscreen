@@ -319,3 +319,54 @@ and "₹ 5000²" (a footnote mark) became ₹50,002. So the accepted shape is no
   settings that cannot change the output (workers, time limits) do not.
 - Cached pages are JSON with a strict decoder (exact keys, types, enum values,
   pages numbered 1..n). Anything else is treated as corrupt and recomputed.
+
+## Task E: Evaluation harness
+
+### Files and pairing
+
+- One JSON file per document in each folder, `<document id>.json`, paired by
+  file name. Files starting with `_` (the template) are ignored. Shape:
+  `{"document": "<source file>", "fields": {<name>: {value, source_page, quote}
+  | {"status": "not_found"}}}`. Unknown or missing keys are errors.
+- **Labels are strict:** any problem in any label file stops the run (exit 2)
+  with every problem listed, because scores against bad labels mean nothing.
+- **Predictions are lenient, field by field:** a missing prediction file, a
+  missing field or a malformed field counts as `invalid` for that field (never
+  as correct), and the rest is still scored. Predicted fields or files that have
+  no label are listed and ignored.
+
+### How values compare (by field name)
+
+- `_paise`: money, exactly in paise; integer paise or text `parse_inr` accepts.
+  JSON numbers with a decimal point are refused (`parse_float=Decimal`, so no
+  float ever enters).
+- `_date`, `_deadline`, `_at`: exactly, as IST datetimes from `parse_date`,
+  including whether a time was stated ("15/10/2026" differs from
+  "15/10/2026 00:00").
+- `number_of_` / `_count`: whole numbers; `_percentage` / `_percent`: decimals
+  (2.5 equals 2.50); everything else: text, after Unicode NFC, collapsing
+  whitespace and ignoring case. Naming by convention was chosen over a separate
+  schema file so labels need no extra configuration; docs/labelling.md has the
+  table.
+- Quotes are required in labels but not compared (the spec compares values);
+  page agreement (same `source_page` for correct values) is reported extra.
+
+### Outcomes and reports
+
+- Per field: labelled, correct, accuracy, wrong, missed (label has a value,
+  prediction said not_found), invented (label says not_found, prediction gave a
+  value), invalid, page agreement.
+- `report.md` and `summary.json` go to `--out` (default `eval-results/`,
+  git-ignored). The JSON has counts and outcomes only, no field values. The
+  Markdown shows values for mistakes, except fields whose names suggest contact
+  data (contact, phone, mobile, email, address), which are hidden (CLAUDE.md:
+  never log phone numbers).
+- Money in the Markdown report is shown in rupees with Indian digit grouping
+  ("₹ 25,00,000.00"): CLAUDE.md converts paise only when formatting for people.
+- Money given as a bare integer is read as **paise** (the field is named
+  `_paise`, and the pipeline will store int paise). Hand labels are safer
+  written as text ("Rs. 25 lakh"); docs/labelling.md says so.
+- The labels template marks every field `TODO`, which the validator rejects, so
+  an unfinished label can never silently count as `not_found`.
+- A prediction file that is not readable JSON makes every field of that
+  document `invalid`, with the JSON error as the reason.

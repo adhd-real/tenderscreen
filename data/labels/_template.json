@@ -1,0 +1,17 @@
+{
+  "document": "TODO: file name in data/manual, e.g. pwd_award_2026_17.pdf",
+  "fields": {
+    "tender_id": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "issuing_organisation": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "bid_submission_deadline": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "emd_paise": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "award_date": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "successful_bidder_name": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "contract_value_paise": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "number_of_bids": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "loa_date": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "pbg_percentage": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "pbg_deadline": {"value": "TODO", "source_page": 1, "quote": "TODO"},
+    "contact_details": {"value": "TODO", "source_page": 1, "quote": "TODO"}
+  }
+}
