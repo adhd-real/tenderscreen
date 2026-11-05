@@ -192,7 +192,9 @@ python -m tenderscreen.datacheck --no-ocr
 
 If `records.csv` has a broken row (one cell too many because of a stray comma,
 or a stray double quote that would run several rows together), the kit stops,
-names the line, and changes nothing.
+names the line, and changes nothing. If you save `records.csv` while the kit is
+running, it does not overwrite your version: it stops and asks you to run it
+again.
 
 ## What to look for in the summary
 

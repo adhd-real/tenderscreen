@@ -578,7 +578,8 @@ fixed and tested:
 - **A stray double quote could merge rows**: Python's `csv` module, by default,
   reads an unterminated quote as one cell running to the end of the file, and
   writing that back would have merged the following rows into it. The reader is
-  now strict, and broken quoting stops the kit with the line number.
+  now strict, and broken quoting stops the kit with the line number. (A stray
+  quote that a later inch mark closes still parses; see the next section.)
 - **No language guess from doubtful OCR**: if any OCR'd page has low quality,
   the language cell stays blank and the summary says why. A misread script can
   look like another language, and a wrong pre-filled value is worse than a
@@ -592,7 +593,7 @@ fixed and tested:
   its `.htm`/`.html` name (unless it contains binary data).
 - **records.csv writes are durable and keep permissions**: the file is fsynced,
   the folder synced after the rename, and the file keeps its mode (the temporary
-  file used to make it owner-only); a new file is `0644`.
+  file used to make it owner-only); a new file gets the mode the umask allows.
 - **Excel's trailing empty columns** (blank header names at the end) are
   dropped instead of stopping the kit; a value typed under such a column still
   stops it, as does a row wider than the header row.
@@ -603,8 +604,9 @@ fixed and tested:
   portal and notice type, and which fields each portal's records contain.
   Typed values and file names are flattened and escaped so they cannot break
   its tables.
-- The test of the committed `records.csv` checks only that its header has every
-  column: its rows are the user's data and must not break a test.
+- The committed `data/manual/records.csv` is no longer read by any test: its
+  rows and columns are the user's data. The template itself is tested instead
+  (written out and read back by the kit's reader).
 - Tests moved out of `tests/datacheck/test_ocr_path.py` into `test_inspect.py`
   and `test_run.py`, so test files mirror modules (CLAUDE.md layout).
 - The guide now covers robots.txt that errors, redirects or shows a captcha
@@ -616,3 +618,21 @@ fixed and tested:
   `data/manual/records.csv` and write `records-summary.md` there. The kit only
   ever reads the uploaded documents; adding an explicit exception for these two
   files would change a CLAUDE.md rule, which I may not do.
+
+### Found in the review of the Task F fixes (fixed in a follow-up commit)
+
+- **Edits saved while the kit ran were overwritten**: records.csv was read at
+  the start and replaced at the end, and OCR can take minutes. The kit now
+  keeps the bytes it read and refuses to replace a file that changed, was
+  removed or was created meanwhile; your version is kept and it asks you to run
+  it again.
+- **A stray quote closed by an inch mark** (`"Rs 5 lakh in words` on one row,
+  `DI pipe 6"` on a later one) is valid CSV, so strict parsing could not see
+  it, and the rows in between ended up inside one cell. A cell whose later
+  lines carry at least half as many commas as the table has columns now stops
+  the kit with the line where the cell starts. A note that spans lines and
+  contains a comma or two is still accepted.
+- The mode is set on the open temporary file before it is synced, so it is
+  durable too, and a new file respects the umask (it was always `0644`).
+- The test that HTML is read in a worker now fails if it is read in the parent.
+

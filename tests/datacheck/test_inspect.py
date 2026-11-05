@@ -297,7 +297,14 @@ def test_counts_from_json() -> None:
     assert counts_from_json([0, 5, 2]) == (0, 5, 2)
 
 
-def test_html_language_runs_in_a_worker(tmp_path: Path) -> None:
+def test_html_language_runs_in_a_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Counting in this process would hit the patched function and fail; a spawned
+    worker imports its own, unpatched copy (found in the review of the fixes)."""
+
+    def not_here(text: str) -> tuple[int, int, int]:
+        raise AssertionError("the HTML page was read in the parent process")
+
+    monkeypatch.setattr(inspect, "letter_counts", not_here)
     path = tmp_path / "hindi.html"
     path.write_text("<p>" + " ".join(HINDI_NOTICE * 3) + "</p>", encoding="utf-8")
     assert html_language(path, ExtractionLimits()) == ("hindi", "")

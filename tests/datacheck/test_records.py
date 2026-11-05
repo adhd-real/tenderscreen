@@ -1,5 +1,3 @@
-import csv
-import io
 import os
 import stat
 from pathlib import Path
@@ -9,12 +7,14 @@ import pytest
 from tenderscreen.datacheck.records import (
     COLUMNS,
     FIELD_COLUMNS,
-    NEW_FILE_MODE,
     PREFILLED,
     Records,
     RecordsError,
+    _check_unchanged,
+    _default_file_mode,
     _file_mode,
     _parse_csv,
+    _swallowed_rows,
     fill_blanks,
     read_records,
     template_csv,
@@ -41,13 +41,14 @@ def test_template_has_every_required_column() -> None:
     )
 
 
-def test_committed_records_file_has_every_column() -> None:
-    """Only the header is checked: the rows (and any extra columns) are the user's data,
-    and filling them in must never break this test (found in review)."""
-    committed = Path(__file__).resolve().parents[2] / "data" / "manual" / "records.csv"
-    first_line = committed.read_text(encoding="utf-8-sig").splitlines()[0]
-    header = next(csv.reader(io.StringIO(first_line)))
-    assert set(COLUMNS) <= {name.strip() for name in header}
+def test_template_round_trips_through_the_reader(tmp_path: Path) -> None:
+    """The committed data/manual/records.csv started as this template. It is not
+    read here: its rows and columns are the user's data, and a test must not
+    fail because they were filled in (found in two reviews)."""
+    path = tmp_path / "records.csv"
+    path.write_text(template_csv(), encoding="utf-8")
+    records = read_records(path)
+    assert (records.header, records.rows, records.added_columns) == (list(COLUMNS), [], [])
 
 
 def test_missing_file_gives_empty_template_table(tmp_path: Path) -> None:
@@ -191,18 +192,53 @@ def test_write_keeps_the_file_mode(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == "file\nnew.pdf\n"
 
 
-def test_new_file_is_readable_not_owner_only(tmp_path: Path) -> None:
-    path = tmp_path / "records.csv"
-    write_records(path, Records(["file"], []))
-    assert stat.S_IMODE(path.stat().st_mode) == NEW_FILE_MODE == 0o644
+@pytest.mark.parametrize(("umask", "mode"), [(0o022, 0o644), (0o077, 0o600), (0o002, 0o664)])
+def test_new_file_gets_the_mode_the_umask_allows(tmp_path: Path, umask: int, mode: int) -> None:
+    """Not owner-only like the temporary file, and not more open than the umask allows."""
+    old = os.umask(umask)
+    try:
+        path = tmp_path / "records.csv"
+        write_records(path, read_records(path))
+        assert stat.S_IMODE(path.stat().st_mode) == mode
+        assert os.umask(umask) == umask  # the kit left the umask as it was
+    finally:
+        os.umask(old)
+
+
+def test_default_file_mode() -> None:
+    old = os.umask(0o027)
+    try:
+        assert _default_file_mode() == 0o640
+    finally:
+        os.umask(old)
 
 
 def test_file_mode(tmp_path: Path) -> None:
     path = tmp_path / "x.csv"
-    assert _file_mode(path) == NEW_FILE_MODE
+    assert _file_mode(path) == _default_file_mode()
     path.write_text("", encoding="utf-8")
     path.chmod(0o600)
     assert _file_mode(path) == 0o600
+
+
+def test_mode_is_set_before_the_data_is_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text("file\n", encoding="utf-8")
+    path.chmod(0o640)
+    modes: list[int] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode):  # the folder is synced too, after the rename
+            modes.append(stat.S_IMODE(info.st_mode))
+        real_fsync(fd)
+
+    monkeypatch.setattr("tenderscreen.datacheck.records.os.fsync", recording_fsync)
+    write_records(path, Records(["file"], []))
+    assert modes == [0o640]
 
 
 def test_write_is_flushed_to_disk_and_the_folder_synced(
@@ -221,3 +257,83 @@ def test_write_is_flushed_to_disk_and_the_folder_synced(
     write_records(tmp_path / "records.csv", Records(["file"], []))
     assert len(synced) == 1
     assert folders == [tmp_path]
+
+
+# Found in the review of the fixes.
+
+
+def test_edits_saved_while_the_kit_runs_are_never_overwritten(tmp_path: Path) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text(template_csv(), encoding="utf-8")
+    records = read_records(path)
+    typed = template_csv() + "a.pdf,CPPP,https://example.org/typed\n"
+    path.write_text(typed, encoding="utf-8")  # saved by the user meanwhile
+    with pytest.raises(RecordsError, match="was changed while the kit was running"):
+        write_records(path, records)
+    assert path.read_text(encoding="utf-8") == typed
+    assert [p.name for p in tmp_path.iterdir()] == ["records.csv"]  # no temporary file left
+
+
+def test_file_removed_or_created_meanwhile_is_not_replaced(tmp_path: Path) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text(template_csv(), encoding="utf-8")
+    records = read_records(path)
+    path.unlink()
+    with pytest.raises(RecordsError, match="was changed"):
+        write_records(path, records)
+    assert not path.exists()
+    missing = read_records(path)
+    path.write_text("file\nnew.pdf\n", encoding="utf-8")
+    with pytest.raises(RecordsError, match="was created while the kit was running"):
+        write_records(path, missing)
+    assert path.read_text(encoding="utf-8") == "file\nnew.pdf\n"
+
+
+def test_unchanged_file_is_replaced(tmp_path: Path) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text("file\nold.pdf\n", encoding="utf-8")
+    records = read_records(path)
+    assert records.source == b"file\nold.pdf\n"
+    records.rows.append(dict.fromkeys(records.header, "") | {"file": "new.pdf"})
+    write_records(path, records)
+    assert [r["file"] for r in read_records(path).rows] == ["old.pdf", "new.pdf"]
+
+
+def test_check_unchanged_without_a_source_does_not_compare(tmp_path: Path) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text("anything", encoding="utf-8")
+    _check_unchanged(path, Records(["file"], []))  # built in code, not read: no error
+
+
+def test_row_swallowed_by_a_stray_quote_is_refused(tmp_path: Path) -> None:
+    lead = ["CPPP", "", "2026-11-05", "award", "n", *[""] * 12]
+    row_a = ",".join(["a.html", *lead, '"Rs 5 lakh in words'])  # stray quote opens a cell
+    row_b = ",".join(["b.html", *lead, 'DI pipe 6"'])  # an inch mark closes it
+    path = tmp_path / "records.csv"
+    path.write_text(template_csv() + row_a + "\n" + row_b + "\n", encoding="utf-8")
+    assert len(_parse_csv("records.csv", path.read_text(encoding="utf-8"))) == 2  # valid CSV
+    with pytest.raises(RecordsError, match="line 2: a cell runs over the following lines"):
+        read_records(path)
+
+
+def test_multi_line_note_with_a_comma_is_accepted(tmp_path: Path) -> None:
+    note = '"Called the office.\nThey said: no, not online"'
+    path = tmp_path / "records.csv"
+    path.write_text(template_csv() + "a.pdf,CPPP" + "," * 17 + note + "\n", encoding="utf-8")
+    (row,) = read_records(path).rows
+    assert row["notes"] == "Called the office.\nThey said: no, not online"
+
+
+@pytest.mark.parametrize(
+    ("cell", "columns", "swallowed"),
+    [
+        ("one line, with commas, here", 19, False),
+        ("first line\nsecond, with a comma", 19, False),
+        ("words\nb.html,CPPP,,2026-11-05,award,n,,,,,,,,,,,,,6", 19, True),
+        ("words\r\nb.html,CPPP,,,,,,,,,", 19, True),
+        ("first\nsecond, third", 3, True),  # tiny tables: any comma on a later line
+        ("", 19, False),
+    ],
+)
+def test_swallowed_rows(cell: str, columns: int, swallowed: bool) -> None:
+    assert _swallowed_rows(cell, columns) is swallowed

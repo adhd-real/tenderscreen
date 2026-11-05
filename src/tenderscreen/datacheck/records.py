@@ -44,7 +44,6 @@ COLUMNS: Final = (
 PREFILLED: Final = ("file_format", "text_layer_or_scanned", "page_count", "language")
 FIELD_COLUMNS: Final = tuple(c for c in COLUMNS if c.startswith("has_"))
 _BOM: Final = "\N{ZERO WIDTH NO-BREAK SPACE}"  # the UTF-8 byte-order mark Excel writes
-NEW_FILE_MODE: Final = 0o644  # a records.csv the kit creates: readable, like a git checkout
 
 
 class RecordsError(Exception):
@@ -59,6 +58,9 @@ class Records:
     line_ending: str = "\n"
     added_columns: list[str] = field(default_factory=list)
     existed: bool = True  # False when there was no records.csv yet
+    # The file's bytes as read, so that edits saved while the kit runs (OCR can
+    # take minutes) are never overwritten. None: not read from a file.
+    source: bytes | None = None
 
 
 def template_csv() -> str:
@@ -84,17 +86,30 @@ def _parse_csv(name: str, text: str) -> list[tuple[int, list[str]]]:
     return rows
 
 
+def _swallowed_rows(cell: str, columns: int) -> bool:
+    """True if a cell runs over lines that look like rows of their own.
+
+    A stray double quote at the start of a cell, closed by another stray quote
+    on a later row (an inch mark: 6"), still makes valid CSV: every row in
+    between ends up inside one cell. A note that spans lines rarely has half as
+    many commas on one line as the table has columns; a swallowed row does.
+    """
+    later_lines = cell.splitlines()[1:]
+    return any(line.count(",") >= max(1, columns // 2) for line in later_lines)
+
+
 def read_records(path: Path) -> Records:
     """Load records.csv (a missing file gives an empty table with the template header)."""
     if not path.exists():
         return Records(header=list(COLUMNS), rows=[], existed=False)
-    raw = path.read_bytes().decode("utf-8")  # UnicodeDecodeError: let the caller report it
+    source = path.read_bytes()
+    raw = source.decode("utf-8")  # UnicodeDecodeError: let the caller report it
     bom = raw.startswith(_BOM)
     text = raw.removeprefix(_BOM)
     line_ending = "\r\n" if "\r\n" in text.split("\n", 1)[0] + "\n" else "\n"
     rows_raw = _parse_csv(path.name, text)
     if not rows_raw:
-        return Records(header=list(COLUMNS), rows=[], bom=bom, line_ending=line_ending)
+        return Records(list(COLUMNS), [], bom=bom, line_ending=line_ending, source=source)
     width = len(rows_raw[0][1])  # cells in the header row, including blank ones
     header = [name.strip() for name in rows_raw[0][1]]
     while header and not header[-1]:  # Excel can add empty columns at the end
@@ -116,13 +131,29 @@ def read_records(path: Path) -> Records:
                 "name the column in the header row and run again"
             )
         cells = cells[: len(header)]
+        if any(_swallowed_rows(cell, width) for cell in cells):
+            first = line - sum(cell.count("\n") for cell in cells)
+            raise RecordsError(
+                f"{path.name} line {first}: a cell runs over the following lines as if they "
+                "were part of it; look for a stray double quote and run again"
+            )
         if not any(cell.strip() for cell in cells):
             continue  # a blank line
         rows.append(dict(zip(header, cells + [""] * (len(header) - len(cells)), strict=True)))
     added = [c for c in COLUMNS if c not in header]
     for row in rows:
         row.update(dict.fromkeys(added, ""))
-    return Records(header + added, rows, bom, line_ending, added)
+    return Records(header + added, rows, bom, line_ending, added, source=source)
+
+
+def _default_file_mode() -> int:
+    """The mode a newly created file gets: 0o666 minus the process umask.
+
+    Reading the umask means setting it; the kit is single-threaded here.
+    """
+    umask = os.umask(0o022)
+    os.umask(umask)
+    return 0o666 & ~umask
 
 
 def _file_mode(path: Path) -> int:
@@ -130,13 +161,35 @@ def _file_mode(path: Path) -> int:
     try:
         return stat.S_IMODE(path.stat().st_mode)
     except FileNotFoundError:
-        return NEW_FILE_MODE
+        return _default_file_mode()
+
+
+def _check_unchanged(path: Path, records: Records) -> None:
+    """Refuse to replace a file that was edited, created or removed since it was read."""
+    if not records.existed:
+        if path.exists():
+            raise RecordsError(
+                f"{path.name} was created while the kit was running; run the kit again"
+            )
+        return
+    if records.source is None:
+        return  # not read from a file: nothing to compare with
+    try:
+        current: bytes | None = path.read_bytes()
+    except FileNotFoundError:
+        current = None
+    if current != records.source:
+        raise RecordsError(
+            f"{path.name} was changed while the kit was running; your changes are kept, "
+            "run the kit again"
+        )
 
 
 def write_records(path: Path, records: Records) -> None:
     """Write atomically and durably: a crash leaves the old file or the new one, whole.
 
-    The file keeps its permissions (a temporary file starts as owner-only).
+    The file keeps its permissions (a temporary file starts as owner-only), and
+    it is not replaced if it changed after ``read_records`` (``RecordsError``).
     """
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer, lineterminator=records.line_ending)
@@ -148,10 +201,11 @@ def write_records(path: Path, records: Records) -> None:
     fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=".records-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            os.fchmod(handle.fileno(), mode)  # before the fsync, so the mode is durable too
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temp_name, mode)
+        _check_unchanged(path, records)
         os.replace(temp_name, path)
     except BaseException:
         Path(temp_name).unlink(missing_ok=True)
