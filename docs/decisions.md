@@ -265,3 +265,57 @@ and "₹ 5000²" (a footnote mark) became ₹50,002. So the accepted shape is no
   Devanagari embedded) and Hindi scans (shaped by Pillow's raqm). Corrupt,
   truncated, password-protected and oversized cases are derived from these.
   `reportlab` (BSD) is a dev-only dependency.
+
+## Task D: Document store with dedupe and caching
+
+### Layout on disk
+
+- Raw bytes go to `data/raw/<sha256>` (64 lowercase hex characters, no
+  extension), metadata and cached results to `data/raw/store.sqlite3`. Both are
+  under the git-ignored `data/raw/`, so nothing downloaded is committed.
+- **Why no file extension:** the name must depend only on the content; the
+  content type is recorded in the metadata instead (`sniff_content_type` reads
+  the bytes: PDF, HTML, PNG, JPEG, GIF, TIFF, ZIP/Office, XML, text).
+- Writes are atomic (temporary file, `fsync`, rename). Saving bytes whose file
+  exists but no longer matches its hash rewrites it; `read_bytes` re-checks the
+  hash and raises `CorruptStoredFileError` rather than return damaged bytes.
+
+### Dedupe and sources
+
+- One `documents` row per sha256 (size, content type, first saved time) and one
+  `document_sources` row per distinct (URL, fetch time). Saving identical bytes
+  from a second URL keeps one file and adds a source; saving the same URL at the
+  same time again changes nothing; the same URL fetched later is a new source
+  (it records the re-fetch).
+- `fetched_at` must be timezone-aware (naive times are refused, never assumed)
+  and is stored converted to IST, e.g. `2026-10-15T17:00:00+05:30`.
+- Source URLs need a scheme but any scheme is allowed (`file:` for manual
+  uploads); the fetcher's domain allowlist is a separate, later concern.
+- The store refuses documents over 100 MB, matching the extraction limit
+  (security rule: bound every input).
+
+### Interface for a later Postgres switch
+
+- `StoreBackend` is a `typing.Protocol` with seven methods; `SQLiteBackend` is
+  the only implementation. The SQL uses `ON CONFLICT ... DO NOTHING / DO UPDATE`
+  and ISO text timestamps, both of which Postgres accepts, so a Postgres backend
+  mostly swaps placeholders and connection handling. A schema-version row makes
+  future migrations explicit; an unknown version is refused.
+
+### Result cache
+
+- Key: (sha256, step name, step version). Each entry stores the payload bytes
+  and their sha256. On every read the checksum is verified and the payload must
+  decode and validate; otherwise the entry is deleted, counted in
+  `stats.discarded`, and the step runs again. Errors are never cached.
+- Storing a result for a new version deletes that document's older versions of
+  the step, so "changing a step's version invalidates its entries" holds per
+  document as it is reprocessed; `invalidate_step(step, keep_version)` purges a
+  step everywhere at once.
+- `extract_pages(path, cache=...)` uses step `extract_pages` with a version
+  string that includes the code version, the PDFium build, the Tesseract
+  version and every setting that changes the output (languages, thresholds,
+  DPI, ...). So upgrading Tesseract or changing a threshold recomputes, and
+  settings that cannot change the output (workers, time limits) do not.
+- Cached pages are JSON with a strict decoder (exact keys, types, enum values,
+  pages numbered 1..n). Anything else is treated as corrupt and recomputed.

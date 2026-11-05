@@ -1,0 +1,68 @@
+"""Plain records passed between the store and its storage backend."""
+
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Final
+
+from tenderscreen.ist import to_ist
+
+_SHA256_HEX: Final = re.compile(r"[0-9a-f]{64}")
+MAX_URL_CHARS: Final = 2048
+
+
+def check_sha256(value: str) -> str:
+    """Return ``value`` if it is a lowercase hex sha256 digest, else raise ValueError."""
+    if not _SHA256_HEX.fullmatch(value):
+        raise ValueError(f"not a lowercase hex sha256 digest: {value[:80]!r}")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class Source:
+    """Where and when a document's bytes were fetched."""
+
+    url: str
+    fetched_at: datetime  # timezone-aware, Asia/Kolkata
+
+    def __post_init__(self) -> None:
+        url = self.url
+        if not url or len(url) > MAX_URL_CHARS or any(ch.isspace() for ch in url):
+            raise ValueError("source URL must be non-empty, under 2048 chars, with no spaces")
+        if ":" not in url or not url.split(":", 1)[0].isalpha():
+            raise ValueError(f"source URL needs a scheme such as https: {url[:80]!r}")
+        # Refuses naive datetimes and normalises any offset to IST.
+        object.__setattr__(self, "fetched_at", to_ist(self.fetched_at))
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentRecord:
+    """Metadata of one stored document (one row per distinct content)."""
+
+    sha256: str
+    size_bytes: int
+    content_type: str
+    first_saved_at: datetime  # timezone-aware, Asia/Kolkata
+    sources: tuple[Source, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CacheKey:
+    """Identifies one step's result for one document."""
+
+    sha256: str
+    step: str
+    version: str
+
+    def __post_init__(self) -> None:
+        check_sha256(self.sha256)
+        if not self.step or not self.version:
+            raise ValueError("cache key needs a step name and a step version")
+
+
+@dataclass(frozen=True, slots=True)
+class CacheEntry:
+    """A cached result as stored: the bytes and the sha256 they had when written."""
+
+    payload: bytes
+    checksum: str

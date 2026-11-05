@@ -18,6 +18,8 @@ import tempfile
 from pathlib import Path
 from typing import Final
 
+import pypdfium2.version
+
 from tenderscreen.documents.errors import OcrFailedError, PageTimeoutError, WorkerStartError
 from tenderscreen.documents.models import (
     ExtractionLimits,
@@ -29,6 +31,7 @@ from tenderscreen.documents.models import (
 from tenderscreen.documents.ocr import (
     OcrOutcome,
     OcrTask,
+    find_tesseract,
     ocr_page_json,
     outcome_from_json,
     require_tesseract,
@@ -39,11 +42,16 @@ from tenderscreen.documents.sandbox import (
     TaskTimeoutError,
     run_tasks,
 )
+from tenderscreen.documents.serialization import decode_pages, encode_pages
 from tenderscreen.documents.textlayer import (
     TextLayerPage,
+    check_file,
     has_usable_text_layer,
     read_text_layers,
 )
+from tenderscreen.store.cache import ResultCache
+from tenderscreen.store.documents import sha256_file
+from tenderscreen.store.records import CacheKey
 
 OCR_STAGE: Final = "rendering and OCR"
 # Each worker stops its own Tesseract at the page limit and reports it; the
@@ -51,12 +59,41 @@ OCR_STAGE: Final = "rendering and OCR"
 # because rendering hangs).
 WORKER_GRACE_S: Final = 2.0
 
+# Result-cache step name and version. Bump EXTRACT_PAGES_VERSION whenever a code
+# change could change extract_pages' output, so cached results are recomputed.
+EXTRACT_PAGES_STEP: Final = "extract_pages"
+EXTRACT_PAGES_VERSION: Final = "1"
+
+
+def step_version(settings: ExtractionSettings) -> str:
+    """Everything that can change the output: code, PDFium, Tesseract, settings.
+
+    Settings that cannot change the output (workers, the Tesseract program's
+    path, time and memory limits) are left out, so changing them keeps the cache.
+    """
+    tesseract = find_tesseract(settings.tesseract_binary)
+    parts = [
+        EXTRACT_PAGES_VERSION,
+        f"pdfium={pypdfium2.version.PDFIUM_INFO}",
+        f"tesseract={tesseract.version if tesseract else 'none'}",
+        f"languages={settings.languages}",
+        f"min_text_chars={settings.min_text_chars}",
+        f"image_page_min_text_chars={settings.image_page_min_text_chars}",
+        f"image_coverage_threshold={settings.image_coverage_threshold}",
+        f"ocr_dpi={settings.ocr_dpi}",
+        f"max_render_pixels={settings.max_render_pixels}",
+        f"min_ocr_confidence={settings.min_ocr_confidence}",
+        f"max_suspicious_share={settings.max_suspicious_share}",
+    ]
+    return ";".join(parts)
+
 
 def extract_pages(
     path: Path | str,
     *,
     limits: ExtractionLimits | None = None,
     settings: ExtractionSettings | None = None,
+    cache: ResultCache | None = None,
 ) -> list[PageText]:
     """One ``PageText`` per page, in page order (page numbers start at 1).
 
@@ -67,10 +104,29 @@ def extract_pages(
     (OCR needed but Tesseract or a language missing) and ``OcrFailedError``.
     ``FileNotFoundError`` if the path does not exist. The first failing page
     stops the whole document.
+
+    With a ``cache`` (see ``tenderscreen.store``), results are stored under the
+    file's sha256 and ``step_version(settings)``: the same document is never
+    processed twice, and a damaged cache entry is recomputed, never trusted.
+    Failures are not cached.
     """
     path = Path(path)
     limits = limits or ExtractionLimits()
     settings = settings or ExtractionSettings()
+    if cache is None:
+        return _extract(path, limits, settings)
+    check_file(path, limits)  # the size limit applies before the file is read to hash it
+    key = CacheKey(sha256_file(path), EXTRACT_PAGES_STEP, step_version(settings))
+    return cache.get_or_compute(
+        key,
+        lambda: _extract(path, limits, settings),
+        encode=encode_pages,
+        decode=decode_pages,
+    )
+
+
+def _extract(path: Path, limits: ExtractionLimits, settings: ExtractionSettings) -> list[PageText]:
+    """The uncached work of ``extract_pages``."""
     layers = read_text_layers(path, limits)
     to_ocr = [page for page in layers if not has_usable_text_layer(page, settings)]
     outcomes = _ocr_pages(path, to_ocr, limits, settings) if to_ocr else {}
