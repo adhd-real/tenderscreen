@@ -150,3 +150,118 @@ and "₹ 5000²" (a footnote mark) became ₹50,002. So the accepted shape is no
   "12:00 AM" is midnight at the start of the day.
 - `tzdata` is a pinned runtime dependency; a test starts a fresh interpreter with
   `PYTHONTZPATH` pointing at a non-existent folder and still gets +05:30.
+
+## Task C: PDF text extraction and OCR
+
+### Tesseract installed here; OCR tests skip locally without it, fail in CI
+
+- `apt-get install -y tesseract-ocr tesseract-ocr-hin fonts-noto-core` worked in
+  this session (Tesseract 5.3.4 with `eng`, `hin`, `osd`), so every OCR test ran.
+- OCR tests use a `tesseract` fixture that skips with the reason when Tesseract
+  (with eng+hin) or a Devanagari font is missing. `ci.yml` installs the same
+  three packages and sets `TENDERSCREEN_REQUIRE_OCR=1`, which turns that skip
+  into a failure, so OCR tests can never be silently skipped in CI. A guard test
+  checks both lines stay in `ci.yml`.
+- Most OCR *plumbing* (timeouts, crashes, failures, missing languages, minimal
+  environment) is tested with a fake `tesseract` shell script, so those tests run
+  everywhere and fast.
+
+### When does a page "have a text layer"?
+
+- At least `min_text_chars` = 40 letters/digits/vowel signs, **and**, if images
+  cover at least half the page, at least `image_page_min_text_chars` = 200.
+- **Why the second rule:** Indian government scans often carry a small real-text
+  overlay such as "Digitally signed by … Date: 2026.10.15 17:30:45 IST" (about
+  45-100 characters). A plain threshold would treat such a scan as text and never
+  OCR the scanned body. A scan that already has a full OCR text layer (hundreds of
+  characters) still uses it. Both thresholds are settings.
+- Characters in the private-use area, unassigned code points, U+FFFD and control
+  characters do not count as text; if they exceed 5% of a text layer, the page's
+  quality is `low`.
+- **Known gap:** PDFs typed in legacy Hindi fonts (Kruti Dev and similar) have a
+  text layer of Latin "gibberish" that looks like real text; they are not
+  detected and are not OCR'd. Detecting them needs a language check; noted in the
+  report.
+
+### Quality flag
+
+- `good`, `low` or `empty`. OCR pages are `low` when Tesseract's mean word
+  confidence is below 60 (`min_ocr_confidence`); `empty` means no letters or
+  digits at all (blank page). `ocr_confidence` (0-100) is returned too.
+
+### Every parse of the PDF runs in a sandboxed child process
+
+- **First version** read text layers in the main process and ran OCR in a
+  `multiprocessing.Pool`. The fresh-context review broke it three ways: a 2.4 KB
+  "PDF bomb" of nested Form XObjects kept the main process busy for 19 s and
+  1.8 GB, and a slightly larger one aborted the whole program; a worker crash
+  (segfault) was reported 65 s later as a timeout; and a worker killed while
+  idle (for example by the out-of-memory killer) made `Pool` shutdown hang
+  forever. A first attempt to kill worker process groups also deadlocked `Pool`.
+- **Now** (`documents/sandbox.py`): every parse of the file, text layers and
+  OCR alike, happens in fresh "spawn" child processes that the parent manages
+  directly (one pipe each). The parent waits on the pipe *and* the process
+  sentinel, so a dead child is noticed at once ("killed by SIGSEGV"), and it
+  kills exactly the child that overran. Each child gets a 1 GiB address-space cap
+  (`ExtractionLimits.max_memory_bytes`, Linux `RLIMIT_AS`, inherited by
+  Tesseract); normal pages need under 300 MB, and the review's bombs now fail
+  in under a second with a clean `CorruptDocumentError`.
+- **Deadlines:** a child first reports "ready" (starting Python is not the
+  document's fault and has its own 60 s limit); then opening the file, each
+  text-layer page and each OCR page get `page_timeout_s` (60 s). An OCR worker
+  stops its own Tesseract at the limit and reports it; the parent kills a worker
+  that has not answered 2 s later (a hung render).
+- **Fail fast:** the first failed page (timeout, OCR error, crash) stops the
+  whole document at once and kills every worker; previously all pages ran first.
+- **Children answer in JSON, never pickle**, capped at 16 MB per message and
+  validated by the parent: a child parses untrusted data, so if PDFium were ever
+  exploited, its messages must not become code execution in the parent
+  (CLAUDE.md: never unpickle anything derived from a document).
+- **Tesseract dies with its worker:** started with the parent-death signal
+  (`PR_SET_PDEATHSIG`, Linux), and it exits at once if the worker is already gone.
+  A test checks no Tesseract outlives a killed worker.
+- **Temporary files:** the parent creates one folder per document (a sub-folder
+  per page) and always deletes it, even when workers are killed; before, a
+  killed worker leaked its page image.
+- **Calling scripts:** "spawn" re-imports the main program, so scripts must
+  guard their top level with `if __name__ == "__main__":`. A script piped into
+  `python -` cannot be re-imported at all; this is now detected up front with a
+  clear error instead of workers crashing on start.
+- Workers default to the CPUs this process may use (CPU affinity), never more
+  than the pages to OCR. Each child costs about 0.3 s to start; measured before
+  optimising, per CLAUDE.md.
+- Rendering uses PDFium (pypdfium2, BSD-3/Apache-2.0) at 300 dpi grayscale,
+  capped at 50 megapixels for posters; no poppler, no PyMuPDF. Pillow (MIT-CMU,
+  HPND-style) writes the PNG. Tesseract runs as a program with
+  `OMP_THREAD_LIMIT=1` and only `PATH` and `TESSDATA_PREFIX` in its environment.
+- **Limits** (`ExtractionLimits`): 100 MB (checked with `stat` before anything
+  opens the file), 1,000 pages, 60 s per page, 1 GiB memory per worker. Each
+  failure has its own `DocumentError` subclass whose message names the file,
+  page and setting. Corrupt, empty, non-PDF, password-protected, crashing and
+  memory-exhausting files raise `CorruptDocumentError`; a missing file raises
+  `FileNotFoundError`; a worker that cannot start raises `WorkerStartError`.
+
+### Image coverage in page coordinates (found in review)
+
+- Coverage was computed against (0, 0, width, height) and with Form XObject
+  coordinates taken as page coordinates, so a scan on a page whose box starts
+  at (1000, 1000), or a scan wrapped in a form (as merge and stamp tools do),
+  measured 0% images and was wrongly treated as a text page. Now images are
+  mapped through every enclosing form's matrix and clipped to the page's visible
+  box (media box intersected with crop box). Both cases are tests. At most
+  10,000 image/form objects are examined per page.
+
+### Typing for untyped libraries: stubs, not `ignore_missing_imports`
+
+- pypdfium2 and reportlab ship no type information. Instead of telling mypy to
+  ignore them (which would weaken checking), `stubs/` declares just the calls we
+  use, and `mypy_path = "stubs"` points mypy there.
+
+### Test PDFs
+
+- `tests/documents/pdf_factory.py` builds every PDF: text pages (reportlab),
+  "scanned" pages (a Pillow image of text, placed full-page, so no text layer),
+  scans with a signature overlay, blank pages, Hindi text layers (Noto Sans
+  Devanagari embedded) and Hindi scans (shaped by Pillow's raqm). Corrupt,
+  truncated, password-protected and oversized cases are derived from these.
+  `reportlab` (BSD) is a dev-only dependency.

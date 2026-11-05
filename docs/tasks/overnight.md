@@ -8,11 +8,26 @@ Re-read this file before starting each task.
 - [x] Setup: branch, environment, docs/decisions.md
 - [x] TASK A: Quality gates
 - [x] TASK B: Indian money and date parsing
-- [ ] TASK C: PDF text extraction and OCR
+- [x] TASK C: PDF text extraction and OCR
 - [ ] TASK D: Document store with dedupe and caching
 - [ ] TASK E: Evaluation harness
 - [ ] TASK F: Data check kit for manual research
 - [ ] FINAL STEP: Morning report, push, pull request
+
+## Working notes (for resuming after a restart or compaction)
+
+- Branch `claude/bold-maxwell-8t0jxb`, built on the scaffold branch (see
+  docs/decisions.md). A, B and C are committed and pushed.
+- Commit one task at a time: stage only that task's files, then
+  `git stash push --keep-index --include-untracked` to run every check on the
+  staged state alone, commit, push, `git stash pop`. Do not edit already-staged
+  shared files (pyproject.toml, CLAUDE.md, docs/decisions.md) while later work is
+  in progress, or the pop conflicts.
+- Decision notes for D, E, F are drafted in the session scratchpad
+  (decisions_D.md, decisions_E.md, decisions_F.md); append each to
+  docs/decisions.md when committing that task.
+- After C is committed: add `cache=` to `extract_pages` (Task D), then the
+  datacheck OCR path works and its mypy error goes away.
 
 ## Original prompt (verbatim)
 

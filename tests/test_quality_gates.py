@@ -43,3 +43,9 @@ def test_ci_runs_tests_and_licence_check() -> None:
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "run: pytest\n" in ci
     assert "run: python -m tenderscreen.devtools.licence_check\n" in ci
+
+
+def test_ci_installs_tesseract_and_never_skips_ocr_tests() -> None:
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "apt-get install -y tesseract-ocr tesseract-ocr-hin fonts-noto-core" in ci
+    assert 'TENDERSCREEN_REQUIRE_OCR: "1"' in ci

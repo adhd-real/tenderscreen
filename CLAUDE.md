@@ -40,6 +40,9 @@ checks on Python 3.12 and 3.13, plus a TruffleHog secret scan.
 - `src/tenderscreen/devtools/`: CI tooling (licence check), not used by the pipeline.
 - `src/tenderscreen/parsing/`: money (`parse_inr` → int paise) and date (`parse_date` → IST) parsers.
 - `src/tenderscreen/ist.py`: the `IST` (Asia/Kolkata) zone, `to_ist()` and `now_ist()`.
+- `src/tenderscreen/documents/`: `extract_pages()`: PDF page text from the text layer, else Tesseract OCR (eng+hin) in worker processes.
+- `stubs/`: hand-written type stubs for untyped libraries (pypdfium2, reportlab); `mypy_path` points here.
+- `tests/documents/pdf_factory.py`: builds the synthetic PDFs document tests use.
 - `data/manual/`: public tender documents the user uploads through GitHub.
   Committed. Read them freely; never modify, rename or delete them.
 - `data/raw/`: scratch downloads. Git-ignored.

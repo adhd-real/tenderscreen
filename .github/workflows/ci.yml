@@ -20,10 +20,19 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
+    env:
+      # OCR tests fail instead of skipping when Tesseract or a Devanagari font is
+      # missing (tests/documents/conftest.py), so they always run in CI.
+      TENDERSCREEN_REQUIRE_OCR: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Install OCR system packages (Tesseract with Hindi, Noto fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-hin fonts-noto-core
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:

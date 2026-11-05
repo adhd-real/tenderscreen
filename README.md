@@ -13,6 +13,13 @@ Claude Code cloud sessions install everything automatically through
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 ```
 
+OCR needs Tesseract with English and Hindi, and the Noto fonts used by the Hindi
+tests (CI installs them; without them OCR tests are skipped locally):
+
+```bash
+sudo apt-get install -y tesseract-ocr tesseract-ocr-hin fonts-noto-core
+```
+
 Run all checks (the same ones CI runs):
 
 ```bash
