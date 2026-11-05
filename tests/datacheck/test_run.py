@@ -70,6 +70,7 @@ def test_first_run_adds_rows_and_prefills(manual: Path) -> None:
     assert "`gem/gem_bid_7.pdf`: language not checked" in summary
 
 
+@pytest.mark.slow
 def test_rerun_never_overwrites_manual_entries(manual: Path) -> None:
     """Acceptance: whatever a person typed survives every later run."""
     run(manual, ocr=False, store_root=manual / "unused")
@@ -93,6 +94,7 @@ def test_rerun_never_overwrites_manual_entries(manual: Path) -> None:
         assert "records.csv: no changes." in output
 
 
+@pytest.mark.slow
 def test_new_file_gets_a_row_and_existing_rows_keep_their_order(manual: Path) -> None:
     run(manual, ocr=False, store_root=manual / "unused")
     before = [r["file"] for r in rows(manual)]
@@ -220,6 +222,7 @@ def test_main_module_in_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 # Found in review.
 
 
+@pytest.mark.slow
 def test_file_name_with_surrounding_spaces_gets_one_row_only(manual: Path) -> None:
     build_pdf(manual / "spaced.pdf ", [TextPage()])
     run(manual, ocr=False, store_root=manual / "unused")

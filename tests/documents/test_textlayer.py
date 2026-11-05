@@ -174,13 +174,21 @@ def test_too_many_pages(tmp_path: Path) -> None:
         read_text_layers(path, ExtractionLimits(max_pages=2))
 
 
-def test_pdf_bomb_times_out_without_hanging_the_caller(tmp_path: Path) -> None:
+@pytest.fixture
+def quick_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reader stuck on a bomb never reads the stop message; it is killed after the
+    stop grace either way, and the default 0.5 s only makes the test slow."""
+    monkeypatch.setattr("tenderscreen.documents.sandbox.STOP_GRACE_S", 0.05)
+
+
+def test_pdf_bomb_times_out_without_hanging_the_caller(tmp_path: Path, quick_stop: None) -> None:
     """Found in review: 2 KB of nested forms kept the main process busy for 19 s."""
     path = build_form_bomb(tmp_path / "bomb.pdf", depth=5)
     with pytest.raises(PageTimeoutError, match=r"bomb\.pdf page 1: reading the text layer"):
         read_text_layers(path, ExtractionLimits(page_timeout_s=0.05))
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(sys.platform != "linux", reason="memory caps use Linux RLIMIT_AS")
 def test_pdf_bomb_hits_the_memory_cap_in_the_child_not_the_caller(tmp_path: Path) -> None:
     """Found in review: a slightly larger bomb aborted the whole calling process."""
@@ -370,8 +378,10 @@ def test_document_deadline_shorter_than_the_page_limit(
         read_text_layers(path, deadline=time.monotonic() + 5)  # 5 s < the 60 s page limit
 
 
-def test_real_document_deadline_on_a_slow_pdf(tmp_path: Path) -> None:
+def test_real_document_deadline_on_a_slow_pdf(tmp_path: Path, quick_stop: None) -> None:
     path = build_form_bomb(tmp_path / "bomb.pdf", depth=5)
-    limits = ExtractionLimits(max_document_s=0.05)
+    # 0.5 s: past the reader's start here, so the deadline falls while it parses
+    # the bomb (which takes many seconds); 0.05 s expired before it read anything.
+    limits = ExtractionLimits(max_document_s=0.5)
     with pytest.raises(DocumentTimeoutError):
         read_text_layers(path, limits)

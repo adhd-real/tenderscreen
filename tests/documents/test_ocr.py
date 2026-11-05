@@ -26,7 +26,7 @@ from tests.documents.pdf_factory import AWARD_SCAN, HINDI_NOTICE, ScannedPage, b
 A4_POINTS = (595.0, 842.0)
 
 
-def make_task(pdf: Path, tesseract_path: str, timeout_s: float = 60.0) -> OcrTask:
+def make_task(pdf: Path, tesseract_path: str, timeout_s: float = 60.0, dpi: int = 300) -> OcrTask:
     work_dir = pdf.parent / f"work-{pdf.stem}"
     work_dir.mkdir(exist_ok=True)
     return OcrTask(
@@ -34,7 +34,7 @@ def make_task(pdf: Path, tesseract_path: str, timeout_s: float = 60.0) -> OcrTas
         page_index=0,
         tesseract_path=tesseract_path,
         languages="eng+hin",
-        dpi=300,
+        dpi=dpi,
         max_pixels=50_000_000,
         timeout_s=timeout_s,
         work_dir=str(work_dir),
@@ -148,7 +148,9 @@ def test_ocr_page_reports_silent_tesseract_failure(tmp_path: Path) -> None:
 def test_ocr_page_times_out_and_stops_tesseract(tmp_path: Path) -> None:
     pdf = build_pdf(tmp_path / "scan.pdf", [ScannedPage()])
     fake = write_fake_tesseract(tmp_path, "exec sleep 30")
-    outcome = ocr_page(make_task(pdf, str(fake), timeout_s=1.0))
+    # 0.5 s: rendering at 72 dpi takes well under that even on a slow runner, so
+    # the fake starts and must be stopped by the limit.
+    outcome = ocr_page(make_task(pdf, str(fake), timeout_s=0.5, dpi=72))
     assert outcome.timed_out
     assert outcome.text == ""
 
@@ -217,7 +219,7 @@ def test_find_tesseract_unrunnable_file(tmp_path: Path) -> None:
 
 
 def test_find_tesseract_that_hangs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tenderscreen.documents.ocr._VERSION_TIMEOUT_S", 0.5)
+    monkeypatch.setattr("tenderscreen.documents.ocr._VERSION_TIMEOUT_S", 0.1)
     script = tmp_path / "tesseract"
     script.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
     script.chmod(0o755)

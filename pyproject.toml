@@ -72,7 +72,7 @@ addopts = ["-ra", "--strict-markers", "--strict-config", "--cov"]
 # The post-edit hook runs only fast tests: pytest -m "not slow" --no-cov.
 # Plain pytest (the check before every commit, and CI) runs everything.
 markers = [
-    "slow: real-Tesseract OCR or a file of 1 MB or more; skipped by the post-edit hook only",
+    "slow: real-Tesseract OCR, a file of 1 MB or more, or over 1 s; skipped by the post-edit hook only",
 ]
 
 [tool.coverage.run]

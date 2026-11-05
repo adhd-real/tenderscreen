@@ -44,6 +44,21 @@ from tests.documents.pdf_factory import (
 
 # Any OCR attempt with this setting fails loudly, proving text pages need no OCR.
 NO_OCR = ExtractionSettings(tesseract_binary="tesseract-must-not-be-called")
+
+
+def fake_ocr(fake: Path, workers: int | None = None) -> ExtractionSettings:
+    """Settings for a fake Tesseract, which never looks at the image: rendering at
+    72 dpi instead of 300 takes a third of the time and keeps timing margins wide."""
+    return ExtractionSettings(tesseract_binary=str(fake), ocr_dpi=72, workers=workers)
+
+
+@pytest.fixture
+def quick_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A text-layer reader stuck on a bomb never reads the stop message; it is killed
+    after the stop grace either way, and the default 0.5 s only makes the test slow."""
+    monkeypatch.setattr("tenderscreen.documents.sandbox.STOP_GRACE_S", 0.05)
+
+
 # A synthetic PDF user password (not a secret).
 LOCK_PHRASE = "synthetic-test-lock"
 
@@ -174,15 +189,17 @@ def test_ocr_unavailable_is_a_clear_error(tmp_path: Path) -> None:
 def test_slow_ocr_page_times_out(tmp_path: Path) -> None:
     path = build_pdf(tmp_path / "slow.pdf", [TextPage(), ScannedPage()])
     fake = write_fake_tesseract(tmp_path, "exec sleep 30")
-    settings = ExtractionSettings(tesseract_binary=str(fake))
     with pytest.raises(PageTimeoutError, match=r"slow\.pdf page 2: rendering and OCR took longer"):
-        extract_pages(path, limits=ExtractionLimits(page_timeout_s=1.0), settings=settings)
+        # Any limit far below the fake's 30 s proves it; the worker enforces it
+        # itself, during rendering or Tesseract alike.
+        extract_pages(path, limits=ExtractionLimits(page_timeout_s=0.3), settings=fake_ocr(fake))
 
 
 def ocr_work_dirs(root: Path) -> list[Path]:
     return sorted(root.glob("tenderscreen-ocr-*"))
 
 
+@pytest.mark.slow
 def test_hung_worker_is_killed_with_its_tesseract_and_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,10 +208,11 @@ def test_hung_worker_is_killed_with_its_tesseract_and_files(
     path = build_pdf(tmp_path / "hang.pdf", [ScannedPage()])
     pid_file = tmp_path / "tesseract.pid"
     fake = write_fake_tesseract(tmp_path, f'echo $$ > "{pid_file}"; exec sleep 60')
-    # Worker's own limit 20 s; the parent's deadline 20 - 17 = 3 s after the page starts.
-    monkeypatch.setattr("tenderscreen.documents.extract.WORKER_GRACE_S", -17.0)
+    # Worker's own limit 20 s; the parent's deadline 20 - 19 = 1 s after the page
+    # starts: ample to render at 72 dpi and start the fake, even on a slow runner.
+    monkeypatch.setattr("tenderscreen.documents.extract.WORKER_GRACE_S", -19.0)
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
-    settings = ExtractionSettings(tesseract_binary=str(fake))
+    settings = fake_ocr(fake)
     with pytest.raises(PageTimeoutError, match=r"hang\.pdf page 1"):
         extract_pages(path, limits=ExtractionLimits(page_timeout_s=20.0), settings=settings)
     assert ocr_work_dirs(tmp_path) == []
@@ -221,7 +239,7 @@ def test_successful_ocr_leaves_no_temporary_files(
     path = build_pdf(tmp_path / "scan.pdf", [ScannedPage()])
     fake = write_fake_tesseract(tmp_path, 'printf "AWARD\\n" > "$2.txt"; : > "$2.tsv"')
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
-    (page,) = extract_pages(path, settings=ExtractionSettings(tesseract_binary=str(fake)))
+    (page,) = extract_pages(path, settings=fake_ocr(fake))
     assert page.text == "AWARD"
     assert ocr_work_dirs(tmp_path) == []
 
@@ -229,7 +247,7 @@ def test_successful_ocr_leaves_no_temporary_files(
 def test_failing_ocr_is_a_clear_error(tmp_path: Path) -> None:
     path = build_pdf(tmp_path / "scan.pdf", [ScannedPage()])
     fake = write_fake_tesseract(tmp_path, "echo 'cannot read image' >&2; exit 1")
-    settings = ExtractionSettings(tesseract_binary=str(fake))
+    settings = fake_ocr(fake)
     expected = r"scan\.pdf page 1: OCR failed: tesseract: cannot read"
     with pytest.raises(OcrFailedError, match=expected):
         extract_pages(path, settings=settings)
@@ -239,7 +257,7 @@ def test_crashed_worker_is_a_clear_error_at_once(tmp_path: Path) -> None:
     """A worker killed mid-page (here by its own Tesseract) is reported as such, at once."""
     path = build_pdf(tmp_path / "scan.pdf", [ScannedPage()])
     fake = write_fake_tesseract(tmp_path, "kill -9 $PPID; exec sleep 60")
-    settings = ExtractionSettings(tesseract_binary=str(fake))
+    settings = fake_ocr(fake)
     started = time.monotonic()
     with pytest.raises(OcrFailedError, match=r"page 1: OCR failed: .*killed by SIGKILL"):
         extract_pages(path, settings=settings)
@@ -252,7 +270,7 @@ def test_first_failing_page_stops_the_document(tmp_path: Path) -> None:
     fake = write_fake_tesseract(
         tmp_path, 'case "$1" in */page-1/*) echo bad >&2; exit 1;; *) exec sleep 60;; esac'
     )
-    settings = ExtractionSettings(tesseract_binary=str(fake), workers=2)
+    settings = fake_ocr(fake, workers=2)
     started = time.monotonic()
     with pytest.raises(OcrFailedError, match=r"many\.pdf page 1: OCR failed: tesseract: bad"):
         extract_pages(path, limits=ExtractionLimits(page_timeout_s=30.0), settings=settings)
@@ -284,7 +302,7 @@ def test_scans_in_unusual_page_geometry_are_ocred(
     assert "AWARD OF CONTRACT" in page.text
 
 
-def test_pdf_bomb_fails_cleanly(tmp_path: Path) -> None:
+def test_pdf_bomb_fails_cleanly(tmp_path: Path, quick_stop: None) -> None:
     path = build_form_bomb(tmp_path / "bomb.pdf", depth=5)
     with pytest.raises(PageTimeoutError):
         extract_pages(path, limits=ExtractionLimits(page_timeout_s=0.05), settings=NO_OCR)
@@ -314,11 +332,14 @@ def test_check_outcome_accepts_the_right_page_and_reports_failures() -> None:
         _check_outcome("x.pdf", ocr_task(1), OcrOutcome(page_index=1, error="x" * 5000), 60.0)
 
 
+@pytest.mark.slow
 def test_document_deadline_during_ocr(tmp_path: Path) -> None:
     path = build_pdf(tmp_path / "slow.pdf", [ScannedPage(), ScannedPage()])
     fake = write_fake_tesseract(tmp_path, "exec sleep 60")
-    limits = ExtractionLimits(page_timeout_s=30.0, max_document_s=3.0)
+    # 1.5 s: past the text-layer pass and the OCR workers' start, even on a slow
+    # runner, so the deadline falls while Tesseract runs.
+    limits = ExtractionLimits(page_timeout_s=30.0, max_document_s=1.5)
     started = time.monotonic()
     with pytest.raises(DocumentTimeoutError, match=r"slow\.pdf: the whole document took longer"):
-        extract_pages(path, limits=limits, settings=ExtractionSettings(tesseract_binary=str(fake)))
+        extract_pages(path, limits=limits, settings=fake_ocr(fake))
     assert time.monotonic() - started < 20

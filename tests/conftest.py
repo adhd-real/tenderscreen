@@ -4,10 +4,11 @@ OCR tests need Tesseract with English and Hindi. Locally they are skipped, with
 the reason, when it is missing. CI sets TENDERSCREEN_REQUIRE_OCR=1, which turns
 that skip into a failure, so OCR tests always run there.
 
-OCR tests and tests that write a file of 1 MB or more are marked
-``@pytest.mark.slow``: the post-edit hook skips them (``-m "not slow"``), while
-plain ``pytest`` and CI run them. A test that uses the ``tesseract`` fixture
-without the marker stops the run (see tests/markers.py).
+OCR tests, tests that write a file of 1 MB or more, and tests that still take
+over 1 s with the shortest reliable timeouts are marked ``@pytest.mark.slow``:
+the post-edit hook skips them (``-m "not slow"``), while plain ``pytest`` and CI
+run them. A test that uses the ``tesseract`` fixture without the marker stops
+the run (see tests/markers.py).
 """
 
 import os

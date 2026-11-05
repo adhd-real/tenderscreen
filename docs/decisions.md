@@ -95,6 +95,34 @@ Choices made while working unattended, with the reason for each. Newest last.
   unmarked; marking the timeout tests would be the next step if the hook
   should be faster.
 
+### A faster post-edit hook (your follow-up, 5 November)
+
+- **Timeouts are set inside the tests only**: production defaults are unchanged.
+  Each timeout test now uses the shortest value that still proves its point on
+  a slow runner. Where a test waited for a silent or stuck child to be
+  stopped, it shortens the stop grace (`STOP_GRACE_S`) or the exit check
+  (`EXIT_GRACE_S`) for itself. Tests with a fake Tesseract render at 72 dpi
+  (the fake never reads the image). The two watchdog tests first wait until
+  the half-sent message has arrived, so a short watchdog cannot make them pass
+  for the wrong reason. The changed tests passed three runs in a row with six
+  busy loops competing for the four CPUs.
+- One test got a longer limit: the document-deadline test on a PDF bomb used
+  0.05 s, which ran out before the reader had started, so it never exercised
+  the deadline during parsing; it now uses 0.5 s.
+- **Marked slow because they still take over 1 s** (6): the whole-document
+  deadline during OCR (it must outlast the text-layer pass on a slow runner),
+  the hung-worker test (1 s parent deadline), the memory-cap bomb, and three
+  data check tests that run the kit two or three times over three files.
+- **Measured** (hook's test step, this 4-CPU container): 53-61 s before, 34-36
+  s after (1,022 fast tests, 19 slow). Under 10 s is not reachable this way:
+  what remains is about 160 worker-process starts at about 0.11 s each, spread
+  over many tests that each take well under 1 s.
+- **Options, not adopted (your decision):** making the package `__init__`
+  imports lazy halves a worker start (112 to 54 ms; a production change, and
+  mypy then sees lazily re-exported names as `Any` unless they are also
+  imported for type checking): 23 s. Running the fast tests in parallel with
+  pytest-xdist (MIT; a new dev dependency): 11-12.6 s. Both together: 8.4 s.
+
 ## Task B: Indian money and date parsing
 
 ### Result types: a value or a reason, never both

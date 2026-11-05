@@ -66,6 +66,20 @@ def run(
     )
 
 
+@pytest.fixture
+def quick_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For tests whose child never reads the stop message: it is killed after the
+    stop grace either way, and the default 0.5 s would only make the test slow."""
+    monkeypatch.setattr(sandbox, "STOP_GRACE_S", 0.05)
+
+
+@pytest.fixture
+def quick_exit_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For tests where a child stays alive after a cut-off message: the default
+    1 s wait to see whether it exits would only make the test slow."""
+    monkeypatch.setattr(sandbox, "EXIT_GRACE_S", 0.1)
+
+
 def test_results_come_back_in_task_order() -> None:
     assert run(square, [3, 1, 2, 5]) == [9, 1, 4, 25]
 
@@ -80,8 +94,11 @@ def test_invalid_worker_count() -> None:
 
 
 def test_tasks_run_in_parallel_worker_processes() -> None:
-    """Never one page at a time: with 3 workers, 3 sleeping tasks overlap in time."""
-    records = [cast(list[float], r) for r in run(sleep_and_record, [1.0, 1.0, 1.0], workers=3)]
+    """Never one page at a time: with 3 workers, 3 sleeping tasks overlap in time.
+
+    0.3 s each: the three are handed out within milliseconds of one another, so
+    they overlap unless they run in sequence, even on a slow runner."""
+    records = [cast(list[float], r) for r in run(sleep_and_record, [0.3, 0.3, 0.3], workers=3)]
     pids = {int(pid) for pid, _, _ in records}
     assert os.getpid() not in pids
     assert len(pids) == 3
@@ -99,7 +116,8 @@ def test_task_exception_is_reported_with_its_index() -> None:
 def test_overrunning_task_is_killed_and_reported() -> None:
     started = time.monotonic()
     with pytest.raises(TaskTimeoutError) as caught:
-        run(sleep_and_record, [0.0, 30.0], timeout_s=2.0)
+        # 0.5 s: ample for the instant task 0 to answer, far below task 1's 30 s.
+        run(sleep_and_record, [0.0, 30.0], timeout_s=0.5)
     assert caught.value.index == 1
     assert time.monotonic() - started < 15
 
@@ -149,7 +167,7 @@ def test_answer_that_is_not_json_is_a_failure() -> None:
         run(unserializable, [1], workers=1)
 
 
-def test_oversized_answer_is_refused() -> None:
+def test_oversized_answer_is_refused(quick_exit_check: None) -> None:
     with pytest.raises(TaskFailedError, match=f"message over {MAX_MESSAGE_BYTES} bytes"):
         run(oversized, [1], workers=1)
 
@@ -161,11 +179,11 @@ def test_describe_exit() -> None:
     assert describe_exit(2) == "the worker process exited with code 2"
 
 
-def test_silent_child_times_out_and_stop_kills_it() -> None:
+def test_silent_child_times_out_and_stop_kills_it(quick_stop: None) -> None:
     child = start_child(silent, (), None)
     pid = child.process.pid
     with pytest.raises(ChildTimeoutError):
-        child.receive(0.2)
+        child.receive(0.1)
     child.stop()  # it never reads the stop message, so it is killed
     assert pid is not None
     with pytest.raises(ProcessLookupError):
@@ -184,7 +202,9 @@ def never_answers(self: Child, timeout: float) -> Json:
     raise ChildTimeoutError
 
 
-def test_child_silent_on_start_is_a_start_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_child_silent_on_start_is_a_start_error(
+    monkeypatch: pytest.MonkeyPatch, quick_stop: None
+) -> None:
     monkeypatch.setattr(Child, "receive", never_answers)
     child = Child(silent, (), None)
     with pytest.raises(ChildStartError, match="did not start within 1 s"):
@@ -194,7 +214,7 @@ def test_child_silent_on_start_is_a_start_error(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.parametrize("first", [["hello"], "ready", []])
 def test_unexpected_first_message_is_a_start_error(
-    monkeypatch: pytest.MonkeyPatch, first: Json
+    monkeypatch: pytest.MonkeyPatch, first: Json, quick_stop: None
 ) -> None:
     monkeypatch.setattr(Child, "receive", lambda self, timeout: first)
     child = Child(silent, (), None)
@@ -269,13 +289,13 @@ def send_hello(conn: Connection, word: str) -> None:
     send_json(conn, ["said", word])
 
 
-def test_receive_ready_rejects_non_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_receive_ready_rejects_non_json(quick_stop: None) -> None:
     child = start_child(silent, (), None)
-    monkeypatch.setattr(child.conn, "poll", lambda: True)
-    monkeypatch.setattr(child.conn, "recv_bytes", lambda limit: b"\xff not json")
-    with pytest.raises(ChildProtocolError, match="not UTF-8 JSON"):
-        child.receive_ready(1.0)
-    monkeypatch.undo()
+    with pytest.MonkeyPatch.context() as patch:  # undone before stop(); quick_stop stays
+        patch.setattr(child.conn, "poll", lambda: True)
+        patch.setattr(child.conn, "recv_bytes", lambda limit: b"\xff not json")
+        with pytest.raises(ChildProtocolError, match="not UTF-8 JSON"):
+            child.receive_ready(1.0)
     child.stop()
 
 
@@ -375,12 +395,21 @@ def test_sending_a_task_to_a_dead_idle_child_fails_that_task() -> None:
 # Found in the second review of the sandbox.
 
 
-def test_half_sent_message_cannot_hang_the_parent() -> None:
+def wait_for_half_message(child: Child, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wait (generously) until the stalled message has started to arrive, then make
+    the watchdog quick, so a short timeout cannot end the test before the watchdog."""
+    assert child.conn.poll(30), "the child never started its message"
+    monkeypatch.setattr(sandbox, "MIN_READ_S", 0.05)
+
+
+def test_half_sent_message_cannot_hang_the_parent(monkeypatch: pytest.MonkeyPatch) -> None:
     """A child that sends a message header and then stalls is cut off by the watchdog."""
     child = start_child(stall_mid_message, (), None)
+    wait_for_half_message(child, monkeypatch)
     started = time.monotonic()
     with pytest.raises(ChildTimeoutError):
-        child.receive(1.0)
+        child.receive_ready(0.1)
+    assert child._timed_out  # cut off by the watchdog, not by waiting for data
     assert time.monotonic() - started < 10
     child.stop()
 
@@ -392,9 +421,11 @@ def test_watchdog_kill_is_a_timeout_even_while_the_child_still_looks_alive(
     ``is_alive()`` was still True and the timeout was misreported as an oversized
     message. Here ``is_alive()`` always says True, as in that moment."""
     child = start_child(stall_mid_message, (), None)
+    wait_for_half_message(child, monkeypatch)
     monkeypatch.setattr(child.process, "is_alive", lambda: True)
     with pytest.raises(ChildTimeoutError):
-        child.receive(1.0)
+        child.receive_ready(0.1)
+    assert child._timed_out
     monkeypatch.undo()
     child.stop()
 
@@ -407,7 +438,7 @@ def test_child_that_dies_mid_message_is_a_death_not_a_size_error(attempt: int) -
     child.stop()
 
 
-def test_has_exited_waits_briefly_for_a_dying_child() -> None:
+def test_has_exited_waits_briefly_for_a_dying_child(quick_exit_check: None) -> None:
     child = start_child(silent, (), None)
     started = time.monotonic()
     assert not child._has_exited()  # alive: waits the full grace, then says so
@@ -420,7 +451,8 @@ def test_has_exited_waits_briefly_for_a_dying_child() -> None:
 def test_overall_deadline_stops_the_run() -> None:
     started = time.monotonic()
     with pytest.raises(DeadlineError):
-        run(sleep_and_record, [30.0, 30.0], deadline=time.monotonic() + 1.0)
+        # Even if the deadline passes while the workers start, the run stops.
+        run(sleep_and_record, [30.0, 30.0], deadline=time.monotonic() + 0.3)
     assert time.monotonic() - started < 10
 
 
@@ -451,13 +483,13 @@ def test_deadline_must_be_finite() -> None:
         run(square, [1], deadline=float("nan"))
 
 
-def test_deeply_nested_answer_is_a_protocol_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deeply_nested_answer_is_a_protocol_error(quick_stop: None) -> None:
     child = start_child(silent, (), None)
-    monkeypatch.setattr(child.conn, "poll", lambda: True)
-    monkeypatch.setattr(child.conn, "recv_bytes", lambda limit: b"[" * 200_000)
-    with pytest.raises(ChildProtocolError, match="nested too deeply"):
-        child.receive_ready(1.0)
-    monkeypatch.undo()
+    with pytest.MonkeyPatch.context() as patch:  # undone before stop(); quick_stop stays
+        patch.setattr(child.conn, "poll", lambda: True)
+        patch.setattr(child.conn, "recv_bytes", lambda limit: b"[" * 200_000)
+        with pytest.raises(ChildProtocolError, match="nested too deeply"):
+            child.receive_ready(1.0)
     child.stop()
 
 
