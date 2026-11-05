@@ -1,13 +1,14 @@
 # Overnight report: 4-5 November 2026
 
-All six tasks are done. Each was checked with ruff, mypy, pytest and pip-audit,
+All six tasks are done, plus the item you added to Task A this morning (a
+`slow` test marker). Each was checked with ruff, mypy, pytest and pip-audit,
 reviewed by a fresh-context reviewer, fixed, and committed on branch
 **`claude/bold-maxwell-8t0jxb`**. Pull request to `main`:
 [adhd-real/tenderscreen#1](https://github.com/adhd-real/tenderscreen/pull/1).
 
 | | |
 |---|---|
-| Tests | 1,006, all passing on Python 3.12 and 3.13; none skipped (Tesseract was installed here) |
+| Tests | 1,039, all passing on Python 3.12 and 3.13; none skipped (Tesseract was installed here); 13 marked `slow` |
 | Coverage of `src/` | 100% (CI gate: 90%) |
 | ruff, ruff format, mypy --strict, pip-audit, licence check | all pass |
 | CI on GitHub | green on the latest commit (3.12, 3.13 and the secret scan), OCR tests included; one earlier run failed on a sandbox race (fixed, see Task C) and one was cancelled by a newer push |
@@ -80,11 +81,21 @@ skip.
   plain `pytest` run (configured in pyproject.toml, so CI's test step enforces
   it), and `python -m tenderscreen.devtools.licence_check`, a CI step that fails
   if any installed distribution declares a GPL, LGPL or AGPL licence, or none.
-- **Tests:** 57 (55 new, plus the 2 scaffold tests). Coverage 100%.
+  Item 3 (added on 5 November): a `slow` marker. The post-edit hook now runs
+  `pytest -m "not slow" --no-cov`; plain `pytest` and CI still run everything
+  with the coverage gate.
+- **Tests:** 63 (61 new, plus the 2 scaffold tests). Coverage 100%.
 - **Decisions:** the check reads declared licence metadata, not licence-file
   text (pypdfium2's bundled ICU licence quotes the GPL inside an autoconf
   exception); a package with no declared licence fails; `--allow NAME` exists for
   reviewed exceptions and is unused.
+- **Slow marker:** "OCR tests" are the 10 that run the real Tesseract (the ones
+  that skip without it, as in your Task C wording); "large-file tests" are the 3
+  that write a file of 1 MB or more. A guard in `tests/conftest.py` stops any
+  run in which an OCR test lacks the marker. Measured: the hook's test step went
+  from 64.8 s to 52.7 s. Most of what remains is tests that wait for timeouts
+  on purpose (about 28 s); they are neither OCR nor large-file tests, so I left
+  them unmarked. Marking them is the next step if the hook should be faster.
 - **Found in review and fixed:** coverage rounded 89.5% up to a pass (now
   `precision = 2`); some GPL spellings slipped past ("GNU Public License");
   `License: UNKNOWN` counted as a licence.
@@ -179,7 +190,7 @@ skip.
   time was stated), text after normalising Unicode, whitespace, case and
   invisible characters. A labels template (12 fields) and
   [labelling.md](labelling.md), a step-by-step guide.
-- **Tests:** 159; the acceptance tests for perfect, wrong, invented and missed
+- **Tests:** 170; the acceptance tests for perfect, wrong, invented and missed
   fields are in `tests/evals/test_run.py`. Coverage 100%.
 - **Decisions:** how a field compares follows from its name (`_paise`, `_date`,
   `number_of_`, `_percentage`, otherwise text), so labels need no schema file.
@@ -192,6 +203,11 @@ skip.
   error details; crafted names could inject Markdown into the report; typos in
   label field names went unnoticed (now checked against the template); money in
   labels written as a bare number would have been read as paise (now refused).
+- **Found in a second review, of those fixes:** a lone surrogate (`"\ud800"`)
+  still crashed the run and left an empty report; the repeated-key check was
+  quadratic (a 5 MB file would have taken over half an hour); a correct value
+  with a malformed citation was scored wrong instead of invalid; links and
+  images in values still rendered (values are now shown as inline code).
 - **Skipped or failing:** nothing.
 
 ### F. Data check kit for manual research
@@ -205,7 +221,7 @@ skip.
   records contain each field, records by portal and notice type, fields per
   portal, and problems. [data-check.md](data-check.md) is the step-by-step guide
   for eprocure.gov.in, eproc.punjab.gov.in and gem.gov.in.
-- **Tests:** 123, on synthetic files only; `test_rerun_never_overwrites_manual_entries`
+- **Tests:** 139, on synthetic files only; `test_rerun_never_overwrites_manual_entries`
   is the acceptance test. Coverage 100%.
 - **Decisions:** a malformed CSV stops the kit with the line number and changes
   nothing; extra columns, row order, BOM and line endings are kept, and an
@@ -217,6 +233,11 @@ skip.
   reason in the summary); HTML parsing had no time limit; rewriting records.csv
   made it owner-only; Excel's trailing empty columns stopped the kit; a
   timestamp made the summary change on every run.
+- **Found in a second review, of those fixes:** edits saved to records.csv while
+  the kit ran were overwritten (it now refuses and keeps your version); a stray
+  quote closed by an inch mark on a later row still merged rows without an
+  error (now caught); the file mode was set after the fsync; a test still read
+  your records.csv.
 - **Skipped or failing:** nothing. The portal details are unverified (above).
 
 ## Dependencies added
@@ -236,8 +257,8 @@ Tesseract itself is a system program (Apache-2.0), called as a separate process.
 - **Order:** setup, then A to F, each committed and pushed separately, then
   review fixes as follow-up commits (`git log` shows one commit per step).
 - **Reviews:** a fresh-context reviewer checked every task's diff against
-  CLAUDE.md and the acceptance criteria; Task C was reviewed twice, and the
-  E and F fix commits once more at the end.
+  CLAUDE.md and the acceptance criteria. Task C was reviewed twice; the E and F
+  fix commits were reviewed once more and their findings fixed (above).
 - **Committed before their reviews finished:** the session's stop hook requires
   committed and pushed work, so D, E and F were committed after every check had
   passed but while their reviews were still running. Their fixes are separate
