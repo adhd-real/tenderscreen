@@ -7,11 +7,10 @@ that skip into a failure, so OCR tests always run there.
 OCR tests and tests that write a file of 1 MB or more are marked
 ``@pytest.mark.slow``: the post-edit hook skips them (``-m "not slow"``), while
 plain ``pytest`` and CI run them. A test that uses the ``tesseract`` fixture
-without the marker stops the run, so the hook can never start OCR by accident.
+without the marker stops the run (see tests/markers.py).
 """
 
 import os
-from collections.abc import Iterable
 from typing import NoReturn
 
 import pytest
@@ -19,28 +18,14 @@ import pytest
 from tenderscreen.documents.errors import OcrUnavailableError
 from tenderscreen.documents.ocr import Tesseract, require_tesseract
 from tests.documents.pdf_factory import find_devanagari_font
+from tests.markers import require_slow_marker_on_ocr_tests
 
 REQUIRE_OCR = os.environ.get("TENDERSCREEN_REQUIRE_OCR") == "1"
 
 
-def unmarked_ocr_tests(items: Iterable[pytest.Item]) -> list[str]:
-    """Node ids of tests that use the real Tesseract but are not marked slow."""
-    return [
-        item.nodeid
-        for item in items
-        if "tesseract" in getattr(item, "fixturenames", ())
-        and item.get_closest_marker("slow") is None
-    ]
-
-
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Refuse to run an OCR test that is not marked slow."""
-    unmarked = unmarked_ocr_tests(items)
-    if unmarked:
-        raise pytest.UsageError(
-            "tests that use the tesseract fixture must be marked @pytest.mark.slow: "
-            + ", ".join(unmarked)
-        )
+    require_slow_marker_on_ocr_tests(items)
 
 
 def _unavailable(reason: str) -> NoReturn:
@@ -51,7 +36,10 @@ def _unavailable(reason: str) -> NoReturn:
 
 @pytest.fixture
 def tesseract() -> Tesseract:
-    """The real Tesseract with eng+hin; skip (locally) or fail (CI) without it."""
+    """The real Tesseract with eng+hin; skip (locally) or fail (CI) without it.
+
+    Tests using it must be marked ``@pytest.mark.slow``; the name is reserved.
+    """
     try:
         return require_tesseract("eng+hin")
     except OcrUnavailableError as exc:

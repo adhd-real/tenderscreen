@@ -8,7 +8,7 @@ reviewed by a fresh-context reviewer, fixed, and committed on branch
 
 | | |
 |---|---|
-| Tests | 1,039, all passing on Python 3.12 and 3.13; none skipped (Tesseract was installed here); 13 marked `slow` |
+| Tests | 1,041, all passing on Python 3.12 and 3.13; none skipped (Tesseract was installed here); 13 marked `slow` |
 | Coverage of `src/` | 100% (CI gate: 90%) |
 | ruff, ruff format, mypy --strict, pip-audit, licence check | all pass |
 | CI on GitHub | green on the latest commit (3.12, 3.13 and the secret scan), OCR tests included; one earlier run failed on a sandbox race (fixed, see Task C) and one was cancelled by a newer push |
@@ -84,15 +84,17 @@ skip.
   Item 3 (added on 5 November): a `slow` marker. The post-edit hook now runs
   `pytest -m "not slow" --no-cov`; plain `pytest` and CI still run everything
   with the coverage gate.
-- **Tests:** 63 (61 new, plus the 2 scaffold tests). Coverage 100%.
+- **Tests:** 65 (63 new, plus the 2 scaffold tests). Coverage 100%.
 - **Decisions:** the check reads declared licence metadata, not licence-file
   text (pypdfium2's bundled ICU licence quotes the GPL inside an autoconf
   exception); a package with no declared licence fails; `--allow NAME` exists for
   reviewed exceptions and is unused.
 - **Slow marker:** "OCR tests" are the 10 that run the real Tesseract (the ones
   that skip without it, as in your Task C wording); "large-file tests" are the 3
-  that write a file of 1 MB or more. A guard in `tests/conftest.py` stops any
-  run in which an OCR test lacks the marker. Measured: the hook's test step went
+  that write a file of 1 MB or more. A guard (`tests/markers.py`) stops any
+  run in which a test uses the `tesseract` fixture without the marker; it
+  cannot see a test that reaches Tesseract some other way, which is why OCR
+  tests should always use the fixture. Measured: the hook's test step went
   from 64.8 s to 52.7 s. Most of what remains is tests that wait for timeouts
   on purpose (about 28 s); they are neither OCR nor large-file tests, so I left
   them unmarked. Marking them is the next step if the hook should be faster.
@@ -258,7 +260,9 @@ Tesseract itself is a system program (Apache-2.0), called as a separate process.
   review fixes as follow-up commits (`git log` shows one commit per step).
 - **Reviews:** a fresh-context reviewer checked every task's diff against
   CLAUDE.md and the acceptance criteria. Task C was reviewed twice; the E and F
-  fix commits were reviewed once more and their findings fixed (above).
+  fix commits were reviewed once more and their findings fixed (above). The
+  slow marker's review found no problems; its suggestions (clearer guard
+  message, the guard in its own module with a real end-to-end test) are in.
 - **Committed before their reviews finished:** the session's stop hook requires
   committed and pushed work, so D, E and F were committed after every check had
   passed but while their reviews were still running. Their fixes are separate

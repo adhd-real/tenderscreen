@@ -7,13 +7,13 @@ user on 2026-11-05.
 ## Progress
 
 - [x] Setup: branch, environment, docs/decisions.md
-- [ ] TASK A: Quality gates (item 3 added 2026-11-05)
+- [x] TASK A: Quality gates (item 3 added 2026-11-05)
 - [x] TASK B: Indian money and date parsing
 - [x] TASK C: PDF text extraction and OCR
 - [x] TASK D: Document store with dedupe and caching
 - [x] TASK E: Evaluation harness
 - [x] TASK F: Data check kit for manual research
-- [ ] FINAL STEP: Morning report, push, pull request
+- [x] FINAL STEP: Morning report, push, pull request
 
 ## Working notes (for resuming after a restart or compaction)
 

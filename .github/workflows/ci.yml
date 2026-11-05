@@ -22,7 +22,7 @@ jobs:
         python-version: ["3.12", "3.13"]
     env:
       # OCR tests fail instead of skipping when Tesseract or a Devanagari font is
-      # missing (tests/documents/conftest.py), so they always run in CI.
+      # missing (tests/conftest.py), so they always run in CI.
       TENDERSCREEN_REQUIRE_OCR: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

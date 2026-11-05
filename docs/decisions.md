@@ -77,9 +77,12 @@ Choices made while working unattended, with the reason for each. Newest last.
   could fail it for reasons unrelated to the edit.
 - **"OCR tests" means tests that run the real Tesseract**: the ones that use
   the `tesseract` fixture, which skip locally without it (your wording in Task
-  C). That is 10 tests. A guard in `tests/conftest.py` stops any run in which
-  a test uses the fixture without `@pytest.mark.slow`, so a new OCR test cannot
-  slip into the hook.
+  C). That is 10 tests. A guard (`tests/markers.py`, called from
+  `tests/conftest.py`) stops any run in which a test uses the fixture without
+  `@pytest.mark.slow`, so the name `tesseract` is reserved for the real one. It
+  cannot see a test that reaches Tesseract another way (for example
+  `extract_pages` on a scan with default settings); such a test should use the
+  fixture, which is also what makes it skip where Tesseract is missing.
 - **"Large-file tests" means tests that write a file of 1 MB or more**: three
   (a 2.4 MB HTML page, a 3 MB document for chunked hashing, a 5 MB labels
   file). The oversized-file tests elsewhere use tiny limits on tiny files, so

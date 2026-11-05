@@ -1,5 +1,8 @@
 """Guard the CI quality gates against being weakened by accident."""
 
+import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any, cast
@@ -7,7 +10,7 @@ from typing import Any, cast
 import coverage
 import pytest
 
-from tests.conftest import pytest_collection_modifyitems, unmarked_ocr_tests
+from tests.markers import require_slow_marker_on_ocr_tests, unmarked_ocr_tests
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -89,18 +92,18 @@ class FakeItem:
         return object() if name == "slow" and self.slow else None
 
 
-class FakeDoctest:
-    """A collected item without fixtures, such as a doctest."""
+class FakeItemWithoutFixtures:
+    """A collected item with no ``fixturenames`` at all (a plugin's own kind of item)."""
 
     nodeid = "doc.txt::doc"
 
 
-ITEMS: list[FakeItem | FakeDoctest] = [
+ITEMS: list[FakeItem | FakeItemWithoutFixtures] = [
     FakeItem("t.py::test_ocr_marked", ("tmp_path", "tesseract"), slow=True),
     FakeItem("t.py::test_ocr_unmarked", ("tesseract",), slow=False),
     FakeItem("t.py::test_fast", ("tmp_path",), slow=False),
     FakeItem("t.py::test_big_file", ("tmp_path",), slow=True),
-    FakeDoctest(),
+    FakeItemWithoutFixtures(),
 ]
 
 
@@ -110,11 +113,55 @@ def test_unmarked_ocr_tests_are_found() -> None:
 
 
 def test_an_unmarked_ocr_test_stops_the_run() -> None:
-    message = r"must be marked @pytest\.mark\.slow: t\.py::test_ocr_unmarked$"
+    message = (
+        r"give a fake another name\) must be marked @pytest\.mark\.slow: "
+        r"t\.py::test_ocr_unmarked$"
+    )
     with pytest.raises(pytest.UsageError, match=message):
-        pytest_collection_modifyitems(cast(list[pytest.Item], ITEMS))
+        require_slow_marker_on_ocr_tests(cast(list[pytest.Item], ITEMS))
 
 
 def test_marked_ocr_tests_and_other_tests_pass_the_guard() -> None:
     allowed = [item for item in ITEMS if item.nodeid != "t.py::test_ocr_unmarked"]
-    pytest_collection_modifyitems(cast(list[pytest.Item], allowed))  # no error
+    require_slow_marker_on_ocr_tests(cast(list[pytest.Item], allowed))  # no error
+
+
+def run_inner_pytest(folder: Path, ocr_test_marked: bool) -> subprocess.CompletedProcess[str]:
+    """A real pytest run, with the guard wired in as in tests/conftest.py."""
+    (folder / "pytest.ini").write_text("[pytest]\nmarkers =\n    slow: test\n", encoding="utf-8")
+    (folder / "conftest.py").write_text(
+        "import pytest\n"
+        "from tests.markers import require_slow_marker_on_ocr_tests\n\n\n"
+        "@pytest.fixture\n"
+        "def tesseract():\n"
+        "    return None\n\n\n"
+        "def pytest_collection_modifyitems(items):\n"
+        "    require_slow_marker_on_ocr_tests(items)\n",
+        encoding="utf-8",
+    )
+    marker = "@pytest.mark.slow\n" if ocr_test_marked else ""
+    (folder / "test_inner.py").write_text(
+        f"import pytest\n\n\n{marker}def test_ocr(tesseract):\n    pass\n\n\n"
+        "def test_fast():\n    pass\n",
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-m", "not slow"],
+        cwd=folder,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_guard_stops_a_real_pytest_run(tmp_path: Path) -> None:
+    result = run_inner_pytest(tmp_path, ocr_test_marked=False)
+    assert result.returncode == pytest.ExitCode.USAGE_ERROR
+    assert "must be marked @pytest.mark.slow: test_inner.py::test_ocr" in result.stderr
+
+
+def test_marked_ocr_test_is_deselected_in_a_real_fast_run(tmp_path: Path) -> None:
+    result = run_inner_pytest(tmp_path, ocr_test_marked=True)
+    assert result.returncode == pytest.ExitCode.OK, result.stdout + result.stderr
+    assert "1 passed, 1 deselected" in result.stdout
