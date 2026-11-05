@@ -2,8 +2,8 @@
 
 All six tasks are done. Each was checked with ruff, mypy, pytest and pip-audit,
 reviewed by a fresh-context reviewer, fixed, and committed on branch
-**`claude/bold-maxwell-8t0jxb`**. The pull request to `main` is linked at the
-end of this report.
+**`claude/bold-maxwell-8t0jxb`**. Pull request to `main`:
+[adhd-real/tenderscreen#1](https://github.com/adhd-real/tenderscreen/pull/1).
 
 | | |
 |---|---|
@@ -237,7 +237,7 @@ Tesseract itself is a system program (Apache-2.0), called as a separate process.
   review fixes as follow-up commits (`git log` shows one commit per step).
 - **Reviews:** a fresh-context reviewer checked every task's diff against
   CLAUDE.md and the acceptance criteria; Task C was reviewed twice, and the
-  E and F fix commits once more at the end (its result is in the next section).
+  E and F fix commits once more at the end.
 - **Committed before their reviews finished:** the session's stop hook requires
   committed and pushed work, so D, E and F were committed after every check had
   passed but while their reviews were still running. Their fixes are separate
@@ -252,4 +252,5 @@ Tesseract itself is a system program (Apache-2.0), called as a separate process.
 
 ## Pull request
 
-Branch: `claude/bold-maxwell-8t0jxb`. The pull request link is added here once it is open.
+[adhd-real/tenderscreen#1](https://github.com/adhd-real/tenderscreen/pull/1), from branch
+`claude/bold-maxwell-8t0jxb` into `main`.
