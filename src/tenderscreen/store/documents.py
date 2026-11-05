@@ -162,10 +162,10 @@ class DocumentStore:
         except BaseException:
             Path(temp_name).unlink(missing_ok=True)
             raise
-        _sync_directory(self.root)
+        sync_directory(self.root)
 
 
-def _sync_directory(directory: Path) -> None:
+def sync_directory(directory: Path) -> None:
     """Make a rename in ``directory`` durable (POSIX; a no-op where unsupported)."""
     try:
         fd = os.open(directory, os.O_RDONLY)

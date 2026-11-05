@@ -517,3 +517,47 @@ fixed and tested:
   `records.csv` and `README.md` when listing documents). Writing these two files
   into data/manual/ was asked for; the uploaded documents themselves are only
   ever read (CLAUDE.md layout rule).
+
+### Found in the Task F review (fixed in a follow-up commit)
+
+- **A stray double quote could merge rows**: Python's `csv` module, by default,
+  reads an unterminated quote as one cell running to the end of the file, and
+  writing that back would have merged the following rows into it. The reader is
+  now strict, and broken quoting stops the kit with the line number.
+- **No language guess from doubtful OCR**: if any OCR'd page has low quality,
+  the language cell stays blank and the summary says why. A misread script can
+  look like another language, and a wrong pre-filled value is worse than a
+  blank one. The guide asks for the language to be checked by eye; a Hindi
+  document in a legacy non-Unicode font (Kruti Dev) has a Latin-looking text
+  layer and is classed `english`: a known gap, stated in the guide.
+- **HTML pages are parsed in the sandbox** with the per-page time limit and
+  memory cap (CLAUDE.md: a size limit and a timeout on every parse), reading at
+  most the first 5 MB; only three letter counts come back. A page saved in a
+  legacy encoding, or starting with plain text, is still recognised as HTML by
+  its `.htm`/`.html` name (unless it contains binary data).
+- **records.csv writes are durable and keep permissions**: the file is fsynced,
+  the folder synced after the rename, and the file keeps its mode (the temporary
+  file used to make it owner-only); a new file is `0644`.
+- **Excel's trailing empty columns** (blank header names at the end) are
+  dropped instead of stopping the kit; a value typed under such a column still
+  stops it, as does a row wider than the header row.
+- **File names compare stripped on both sides**, so a file named `a.pdf ` no
+  longer gets a new row on every run.
+- **The summary has no timestamp**, so re-running on unchanged records leaves
+  it byte-for-byte unchanged (no git noise). It now also counts records by
+  portal and notice type, and which fields each portal's records contain.
+  Typed values and file names are flattened and escaped so they cannot break
+  its tables.
+- The test of the committed `records.csv` checks only that its header has every
+  column: its rows are the user's data and must not break a test.
+- Tests moved out of `tests/datacheck/test_ocr_path.py` into `test_inspect.py`
+  and `test_run.py`, so test files mirror modules (CLAUDE.md layout).
+- The guide now covers robots.txt that errors, redirects or shows a captcha
+  (treated as not allowing automated access), an empty `Disallow:`,
+  year-month-day dates, safer spreadsheet use (Google Sheets, or Excel's
+  UTF-8 import), and every value the kit writes.
+- **Not changed (your decision)**: CLAUDE.md says files in `data/manual/` are
+  never modified, while the task asks the kit to fill in
+  `data/manual/records.csv` and write `records-summary.md` there. The kit only
+  ever reads the uploaded documents; adding an explicit exception for these two
+  files would change a CLAUDE.md rule, which I may not do.

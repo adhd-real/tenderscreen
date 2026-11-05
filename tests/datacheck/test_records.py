@@ -1,3 +1,7 @@
+import csv
+import io
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -5,9 +9,12 @@ import pytest
 from tenderscreen.datacheck.records import (
     COLUMNS,
     FIELD_COLUMNS,
+    NEW_FILE_MODE,
     PREFILLED,
     Records,
     RecordsError,
+    _file_mode,
+    _parse_csv,
     fill_blanks,
     read_records,
     template_csv,
@@ -34,9 +41,13 @@ def test_template_has_every_required_column() -> None:
     )
 
 
-def test_committed_template_matches_columns() -> None:
+def test_committed_records_file_has_every_column() -> None:
+    """Only the header is checked: the rows (and any extra columns) are the user's data,
+    and filling them in must never break this test (found in review)."""
     committed = Path(__file__).resolve().parents[2] / "data" / "manual" / "records.csv"
-    assert committed.read_text(encoding="utf-8") == template_csv()
+    first_line = committed.read_text(encoding="utf-8-sig").splitlines()[0]
+    header = next(csv.reader(io.StringIO(first_line)))
+    assert set(COLUMNS) <= {name.strip() for name in header}
 
 
 def test_missing_file_gives_empty_template_table(tmp_path: Path) -> None:
@@ -119,3 +130,94 @@ def test_failed_write_keeps_the_old_file(tmp_path: Path, monkeypatch: pytest.Mon
         write_records(path, Records(["file"], [{"file": "new.pdf"}]))
     assert path.read_text(encoding="utf-8") == "file\nold.pdf\n"
     assert [p.name for p in tmp_path.iterdir()] == ["records.csv"]
+
+
+# Found in review.
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ('file,portal\na.pdf,"GeM"x\n', "at or before line 2"),
+        ('file,portal\na.pdf,"GeM\nb.pdf,CPPP\n', "at or before line 3"),
+        ('file,portal\n"a\nb.pdf",GeM\nc.pdf,"x"y\n', "at or before line 4"),
+    ],
+)
+def test_broken_quoting_is_refused_not_merged(tmp_path: Path, content: str, message: str) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(RecordsError, match=f"broken CSV {message}.*stray double quote"):
+        read_records(path)
+
+
+def test_parse_csv_reports_the_line_each_row_ends_on() -> None:
+    rows = _parse_csv("r.csv", 'file,notes\na.pdf,"two\nlines"\nb.pdf,x\n')
+    assert rows == [(1, ["file", "notes"]), (3, ["a.pdf", "two\nlines"]), (4, ["b.pdf", "x"])]
+
+
+def test_quotes_inside_unquoted_cells_are_kept() -> None:
+    assert _parse_csv("r.csv", 'file,notes\na.pdf,6" pipe\n')[1] == (2, ["a.pdf", '6" pipe'])
+
+
+def test_excel_trailing_empty_columns_are_dropped(tmp_path: Path) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text("file,portal,,\na.pdf,GeM,,\nb.pdf,CPPP\n", encoding="utf-8")
+    records = read_records(path)
+    assert records.header[:2] == ["file", "portal"]
+    assert "" not in records.header
+    assert [(r["file"], r["portal"]) for r in records.rows] == [("a.pdf", "GeM"), ("b.pdf", "CPPP")]
+
+
+def test_value_under_an_unnamed_column_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text("file,portal,,\na.pdf,GeM,,typed here\n", encoding="utf-8")
+    with pytest.raises(RecordsError, match="line 2: a value in a column with no name"):
+        read_records(path)
+
+
+def test_row_wider_than_the_header_row_is_still_refused(tmp_path: Path) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text("file,portal,\na.pdf,GeM,,\n", encoding="utf-8")
+    with pytest.raises(RecordsError, match="line 2: 4 cells but only 3 columns"):
+        read_records(path)
+
+
+def test_write_keeps_the_file_mode(tmp_path: Path) -> None:
+    path = tmp_path / "records.csv"
+    path.write_text("file\nold.pdf\n", encoding="utf-8")
+    path.chmod(0o640)
+    write_records(path, Records(["file"], [{"file": "new.pdf"}]))
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert path.read_text(encoding="utf-8") == "file\nnew.pdf\n"
+
+
+def test_new_file_is_readable_not_owner_only(tmp_path: Path) -> None:
+    path = tmp_path / "records.csv"
+    write_records(path, Records(["file"], []))
+    assert stat.S_IMODE(path.stat().st_mode) == NEW_FILE_MODE == 0o644
+
+
+def test_file_mode(tmp_path: Path) -> None:
+    path = tmp_path / "x.csv"
+    assert _file_mode(path) == NEW_FILE_MODE
+    path.write_text("", encoding="utf-8")
+    path.chmod(0o600)
+    assert _file_mode(path) == 0o600
+
+
+def test_write_is_flushed_to_disk_and_the_folder_synced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    synced: list[object] = []
+    real_fsync = os.fsync
+
+    def recording_fsync(fd: int) -> None:
+        synced.append(fd)
+        real_fsync(fd)
+
+    folders: list[Path] = []
+    monkeypatch.setattr("tenderscreen.datacheck.records.os.fsync", recording_fsync)
+    monkeypatch.setattr("tenderscreen.datacheck.records.sync_directory", folders.append)
+    write_records(tmp_path / "records.csv", Records(["file"], []))
+    assert len(synced) == 1
+    assert folders == [tmp_path]

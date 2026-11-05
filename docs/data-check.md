@@ -44,14 +44,23 @@ visit. TenderScreen obeys it (CLAUDE.md rule 5), so we need to know what it says
    - `User-agent: *` starts the rules for all programs; rules under a named
      agent (e.g. `User-agent: Googlebot`) apply only to that one.
    - `Disallow: /path` means programs must not visit addresses starting with
-     `/path`. `Disallow: /` means the whole site.
+     `/path`. `Disallow: /` means the whole site. A `Disallow:` with nothing
+     after the colon disallows nothing.
    - `Allow: /path` makes an exception to a Disallow.
    - `Crawl-delay: 10` asks programs to wait 10 seconds between requests.
-   - A "Page not found" page means the site has no robots.txt.
+   - A "Page not found" (404) page means the site has no robots.txt: it states
+     no rules.
+   - If you get anything else instead of a short plain-text file (a server
+     error, "access denied", a login page, a captcha, or the address bar
+     changes to another page), write down exactly what happened. Until that is
+     cleared up, TenderScreen treats the site as **not** allowing automated
+     access.
 3. For every record from that host, write a short note in the
    `robots_txt_notes` column, for example
-   `2026-11-05: User-agent * Disallow /cppp/ ; no crawl-delay` or
-   `2026-11-05: no robots.txt (404)`. Include the date: robots.txt changes.
+   `2026-11-05: User-agent * Disallow /cppp/ ; no crawl-delay`,
+   `2026-11-05: no robots.txt (404)` or
+   `2026-11-05: robots.txt redirects to home page`. Include the date:
+   robots.txt changes.
 
 ## Step 2: find and save documents (aim for 10 to 15 per portal)
 
@@ -106,18 +115,24 @@ can leave the four kit columns empty; the kit fills them.
 | `file` | the file name inside `data/manual/` (with subfolder if any), e.g. `gem/gem_moe_2026_77.pdf`. Leave empty if you could not save a file. |
 | `portal` | `CPPP`, `Punjab` or `GeM` |
 | `url` | the page address where you found it |
-| `date_found` | the day you found it, e.g. `05/11/2026` |
+| `date_found` | the day you found it, as year-month-day: `2026-11-05` (the same form as in `robots_txt_notes`; it sorts correctly and cannot be read with day and month swapped) |
 | `notice_type` | `award` or `tender` |
 | `captcha_needed` | `y` or `n`: did any step to reach the document ask for a captcha? |
 | `robots_txt_notes` | from Step 1 |
-| `language` | kit fills: `english`, `hindi`, `hindi+english` or `other script` |
-| `file_format` | kit fills: `pdf`, `html`, `jpeg`, ... |
-| `text_layer_or_scanned` | kit fills: `text layer`, `scanned` or `mixed` (PDF pages differ) |
+| `language` | kit fills for PDFs and web pages: `english`, `hindi`, `hindi+english` or `other script`. It leaves the cell empty for images, for scans whose OCR quality is low, and when there is too little text: fill those in by eye. |
+| `file_format` | kit fills: `pdf`, `html`, `jpeg`, `png`, ... |
+| `text_layer_or_scanned` | kit fills: `text layer`, `scanned` or `mixed` (PDF pages differ) for PDFs, `text (html)` for web pages, `scanned (image)` for image files |
 | `page_count` | kit fills (PDFs) |
 | `has_award_date` ... `has_contact_details` | `y` if the document states it, `n` if it does not. `has_pbg_percentage_or_deadline` is `y` if either the PBG percentage or its deadline is given. |
 | `notes` | anything else: "login needed for result", "amount only in words", ... |
 
 If you type something in a kit column yourself, the kit leaves it alone.
+
+**Check the `language` the kit filled in by eye**, at least once per portal. It
+counts Devanagari against Latin letters, so a Hindi document typed in an old
+non-Unicode font (such as Kruti Dev, common in government offices) has a text
+layer of Latin gibberish and comes out as `english`. Correct the cell; the kit
+will not change it back.
 
 ## Step 4: upload through GitHub
 
@@ -132,6 +147,14 @@ If you type something in a kit column yourself, the kit leaves it alone.
    Sheets, and save it as CSV: Excel **CSV UTF-8 (Comma delimited)**, Google
    Sheets **File → Download → Comma-separated values**. Then upload it as in
    step 2. (UTF-8 keeps Hindi text intact.)
+   - **Google Sheets is the safer choice** (**File → Import → Upload**).
+     Opening the CSV by double-clicking it in Excel can garble Hindi text and
+     turn dates and long numbers into something else, which is then saved back.
+     In Excel, use **Data → From Text/CSV** instead, choose the file origin
+     **65001: Unicode (UTF-8)**, and load the columns as text. (Menu names vary
+     a little between Excel versions.)
+   - Empty columns that Excel sometimes adds at the end are fine: the kit drops
+     them.
 
 ## Step 5: run the kit
 
@@ -153,9 +176,11 @@ It will:
    again changes nothing you entered. Files whose four cells are all filled are
    not opened again.
 4. Write `data/manual/records-summary.md`: how many records contain each field
-   (`y` / `n` / blank), plus counts by portal, notice type, captcha, language,
-   format and scanned/text, and a list of problems (unreadable files, rows
-   naming files that do not exist).
+   (`y` / `n` / blank), records by portal and notice type, which fields each
+   portal's records contain, counts by captcha, language, format and
+   scanned/text, and a list of problems (unreadable files, rows naming files
+   that do not exist, files whose language it could not check). Running it
+   again on unchanged records leaves the summary unchanged.
 
 Scanned PDFs are OCR'd (English and Hindi) to detect their language; this needs
 Tesseract and can take a minute per long document. Results are cached in
@@ -165,8 +190,9 @@ Tesseract and can take a minute per long document. Results are cached in
 python -m tenderscreen.datacheck --no-ocr
 ```
 
-If `records.csv` has a broken row (for example one cell too many because of a
-stray comma), the kit stops, names the line, and changes nothing.
+If `records.csv` has a broken row (one cell too many because of a stray comma,
+or a stray double quote that would run several rows together), the kit stops,
+names the line, and changes nothing.
 
 ## What to look for in the summary
 

@@ -2,6 +2,8 @@
 
 import csv
 import io
+import runpy
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,8 @@ from tenderscreen.datacheck.run import (
     main,
     run,
 )
-from tests.documents.pdf_factory import ScannedPage, TextPage, build_pdf
+from tenderscreen.documents.ocr import Tesseract
+from tests.documents.pdf_factory import ENGLISH_NOTICE, ScannedPage, TextPage, build_pdf
 
 
 @pytest.fixture
@@ -178,3 +181,94 @@ def test_files_with_every_kit_cell_filled_are_not_inspected_again(
     monkeypatch.setattr("tenderscreen.datacheck.run.inspect_file", recording)
     run(manual, ocr=False, store_root=manual / "unused")
     assert inspected == []
+
+
+# Moved from test_ocr_path.py, which mirrored no module.
+
+
+def test_second_run_uses_the_cache_not_ocr(
+    tmp_path: Path, tesseract: Tesseract, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    (manual / RECORDS_NAME).write_text(template_csv(), encoding="utf-8")
+    build_pdf(manual / "scan.pdf", [ScannedPage(ENGLISH_NOTICE * 2)])
+    raw = tmp_path / "raw"
+    assert "1 new rows" in run(manual, ocr=True, store_root=raw)
+    (manual / RECORDS_NAME).write_text(template_csv(), encoding="utf-8")  # start over
+
+    def no_ocr(*args: object, **kwargs: object) -> None:
+        raise AssertionError("OCR ran again despite a cached result")
+
+    monkeypatch.setattr("tenderscreen.documents.extract.run_tasks", no_ocr)
+    run(manual, ocr=True, store_root=raw)
+    assert "scan.pdf,,,,,,,english,pdf,scanned,1," in (manual / RECORDS_NAME).read_text("utf-8")
+
+
+@pytest.mark.filterwarnings("ignore:.*found in sys.modules:RuntimeWarning")
+def test_main_module_in_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manual = tmp_path / "manual"
+    manual.mkdir()
+    monkeypatch.setattr(sys, "argv", ["datacheck", "--manual-dir", str(manual), "--no-ocr"])
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("tenderscreen.datacheck", run_name="__main__")
+    assert exc.value.code == 0
+    assert (manual / RECORDS_NAME).read_text(encoding="utf-8") == template_csv()
+
+
+# Found in review.
+
+
+def test_file_name_with_surrounding_spaces_gets_one_row_only(manual: Path) -> None:
+    build_pdf(manual / "spaced.pdf ", [TextPage()])
+    run(manual, ocr=False, store_root=manual / "unused")
+    output = run(manual, ocr=False, store_root=manual / "unused")
+    assert "records.csv: no changes." in output
+    names = [r["file"] for r in rows(manual)]
+    assert names.count("spaced.pdf ") == 1
+    assert "no such file" not in (manual / SUMMARY_NAME).read_text(encoding="utf-8")
+
+
+def test_typed_name_with_spaces_matches_its_file(manual: Path) -> None:
+    (manual / RECORDS_NAME).write_text(
+        template_csv() + " cppp_award_1.pdf ,CPPP\n", encoding="utf-8"
+    )
+    result = check(manual, ocr=False)
+    names = [r["file"] for r in result.records.rows]
+    assert names.count(" cppp_award_1.pdf ") == 1
+    assert "cppp_award_1.pdf" not in names  # no second row for the same file
+    assert result.records.rows[0]["page_count"] == "2"
+
+
+def test_odd_file_names_cannot_break_the_summary(manual: Path) -> None:
+    (manual / "odd`name|1.html").write_text("<p>Award</p>", encoding="utf-8")
+    (manual / RECORDS_NAME).write_text(template_csv() + "gone`x.pdf\n", encoding="utf-8")
+    run(manual, ocr=False, store_root=manual / "unused")
+    summary = (manual / SUMMARY_NAME).read_text(encoding="utf-8")
+    assert "records.csv names `gone'x.pdf`, but there is no such file" in summary
+
+
+def test_rerun_leaves_the_summary_byte_for_byte_unchanged(manual: Path) -> None:
+    run(manual, ocr=False, store_root=manual / "unused")
+    first = (manual / SUMMARY_NAME).read_bytes()
+    run(manual, ocr=False, store_root=manual / "unused")
+    assert (manual / SUMMARY_NAME).read_bytes() == first
+
+
+def test_records_file_keeps_its_permissions(manual: Path) -> None:
+    path = manual / RECORDS_NAME
+    path.chmod(0o664)
+    run(manual, ocr=False, store_root=manual / "unused")
+    assert path.stat().st_mode & 0o777 == 0o664
+
+
+def test_main_broken_quoting_changes_nothing(
+    manual: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    broken = template_csv() + 'a.pdf,"CPPP\nb.pdf,GeM\n'
+    (manual / RECORDS_NAME).write_text(broken, encoding="utf-8")
+    assert main(["--manual-dir", str(manual), "--no-ocr"]) == 2
+    err = capsys.readouterr().err
+    assert "broken CSV at or before line 3" in err
+    assert "records.csv was not changed" in err
+    assert (manual / RECORDS_NAME).read_text(encoding="utf-8") == broken

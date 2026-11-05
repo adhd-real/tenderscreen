@@ -2,7 +2,8 @@
 
 File format (from the bytes), text layer or scanned and page count (for PDFs,
 from the text layer alone, no OCR), and language (Devanagari vs Latin share of
-the text; scanned pages are OCR'd for this unless OCR is switched off).
+the text; scanned pages are OCR'd for this unless OCR is switched off). Every
+parse of a file's content runs in a sandboxed child process with a time limit.
 """
 
 from dataclasses import dataclass
@@ -10,12 +11,21 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Final
 
-from tenderscreen.datacheck.language import language_of
+from tenderscreen.datacheck.language import language_from_counts, language_of, letter_counts
 from tenderscreen.documents import (
     DocumentError,
     ExtractionLimits,
+    ExtractionMethod,
     ExtractionSettings,
+    PageQuality,
     extract_pages,
+)
+from tenderscreen.documents.sandbox import (
+    ChildStartError,
+    Json,
+    TaskFailedError,
+    TaskTimeoutError,
+    run_tasks,
 )
 from tenderscreen.documents.textlayer import has_usable_text_layer, read_text_layers
 from tenderscreen.store import ResultCache
@@ -34,6 +44,12 @@ FORMAT_NAMES: Final = {
     "application/x-ole-storage": "doc/xls",
 }
 _SKIP_TAGS: Final = frozenset({"script", "style", "noscript", "template"})
+# The language of a web page is clear from its start; parsing stops here.
+MAX_HTML_BYTES: Final = 5 * 1024 * 1024
+# A page saved in a legacy encoding (not UTF-8) or starting with plain text is
+# not recognised from its bytes; its name still says it is HTML.
+HTML_SUFFIXES: Final = frozenset({".htm", ".html"})
+MAX_LISTED_PAGES: Final = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +98,53 @@ def html_text(content: bytes) -> str:
     return " ".join(" ".join(parser.parts).split())
 
 
+def html_letter_counts(path: str) -> Json:
+    """Worker side: letters by script in the visible text of the file's first 5 MB."""
+    with open(path, "rb") as handle:
+        content = handle.read(MAX_HTML_BYTES)
+    return list(letter_counts(html_text(content)))
+
+
+def counts_from_json(value: Json) -> tuple[int, int, int]:
+    """The worker's answer as three letter counts; ``ValueError`` if it is anything else."""
+    if isinstance(value, list) and len(value) == 3:
+        devanagari, latin, other = value
+        if (
+            type(devanagari) is int
+            and type(latin) is int
+            and type(other) is int
+            and min(devanagari, latin, other) >= 0
+        ):
+            return devanagari, latin, other
+    raise ValueError("expected three letter counts")
+
+
+def html_language(path: Path, limits: ExtractionLimits) -> tuple[str, str]:
+    """(language, problem) for an HTML file, parsed in a sandboxed child with a time limit."""
+    try:
+        counts = run_tasks(
+            html_letter_counts,
+            [str(path)],
+            decode=counts_from_json,
+            workers=1,
+            timeout_s=limits.page_timeout_s,
+            memory_limit=limits.max_memory_bytes,
+        )[0]
+    except TaskTimeoutError:
+        return "", f"language not checked: reading the page took over {limits.page_timeout_s:g} s"
+    except TaskFailedError as exc:
+        return "", f"language not checked: the page could not be read ({exc.detail})"
+    except ChildStartError as exc:
+        return "", f"language not checked: {exc}"
+    return language_from_counts(*counts), ""
+
+
+def _listed(numbers: list[int]) -> str:
+    """Page numbers for a message: "2, 5, 9", shortened after ten."""
+    shown = ", ".join(str(n) for n in numbers[:MAX_LISTED_PAGES])
+    return shown + (", ..." if len(numbers) > MAX_LISTED_PAGES else "")
+
+
 def inspect_pdf(
     path: Path, *, ocr: bool, cache: ResultCache | None, limits: ExtractionLimits
 ) -> FileFacts:
@@ -102,6 +165,14 @@ def inspect_pdf(
         pages = extract_pages(path, limits=limits, settings=settings, cache=cache)
     except DocumentError as exc:
         return FileFacts(**facts, problem=f"language not checked: {exc}")
+    doubtful = [
+        page.page_number
+        for page in pages
+        if page.method is ExtractionMethod.OCR and page.quality is PageQuality.LOW
+    ]
+    if doubtful:  # a misread script could look like another language: leave it to a person
+        problem = f"language not filled: OCR quality is low on page {_listed(doubtful)}"
+        return FileFacts(**facts, problem=problem + "; check it by eye")
     return FileFacts(**facts, language=language_of("\n".join(p.text for p in pages)))
 
 
@@ -122,11 +193,18 @@ def inspect_file(
     except OSError as exc:
         return FileFacts(problem=f"could not be read: {exc.strerror or exc}")
     media_type = sniff_content_type(content)
+    if (
+        media_type in {"text/plain", "application/octet-stream"}
+        and path.suffix.lower() in HTML_SUFFIXES
+        and b"\x00" not in content[:1024]  # binary data, whatever its name says
+    ):
+        media_type = "text/html"
     file_format = FORMAT_NAMES.get(media_type, "unknown")
     if media_type == "application/pdf":
         return inspect_pdf(path, ocr=ocr, cache=cache, limits=limits)
     if media_type == "text/html":
-        return FileFacts(file_format, "text (html)", language=language_of(html_text(content)))
+        language, problem = html_language(path, limits)
+        return FileFacts(file_format, "text (html)", language=language, problem=problem)
     if media_type.startswith("image/"):
         return FileFacts(file_format, "scanned (image)", "1")
     return FileFacts(file_format)

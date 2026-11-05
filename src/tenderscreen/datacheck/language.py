@@ -29,7 +29,11 @@ def language_of(text: str) -> str:
 
     "" means too little text to say; the cell is then left for a person to fill.
     """
-    devanagari, latin, other = letter_counts(text)
+    return language_from_counts(*letter_counts(text))
+
+
+def language_from_counts(devanagari: int, latin: int, other: int) -> str:
+    """``language_of`` for letters already counted by script."""
     if devanagari + latin + other < MIN_LETTERS:
         return ""
     if other > devanagari + latin:

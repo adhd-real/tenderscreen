@@ -165,7 +165,7 @@ def test_sniff_content_type(content: bytes, expected: str) -> None:
 def test_directory_that_cannot_be_opened_is_not_fatal(tmp_path: Path) -> None:
     from tenderscreen.store import documents
 
-    documents._sync_directory(tmp_path / "no-such-folder")  # returns quietly
+    documents.sync_directory(tmp_path / "no-such-folder")  # returns quietly
 
 
 def test_directory_fsync_refusal_is_not_fatal(
@@ -177,4 +177,4 @@ def test_directory_fsync_refusal_is_not_fatal(
         raise OSError("fsync not supported on directories here")
 
     monkeypatch.setattr("tenderscreen.store.documents.os.fsync", cannot_sync)
-    documents._sync_directory(tmp_path)
+    documents.sync_directory(tmp_path)

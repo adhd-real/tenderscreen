@@ -25,9 +25,8 @@ from tenderscreen.datacheck.records import (
     read_records,
     write_records,
 )
-from tenderscreen.datacheck.summary import render_summary
+from tenderscreen.datacheck.summary import code, render_summary
 from tenderscreen.documents import ExtractionLimits
-from tenderscreen.ist import now_ist
 from tenderscreen.store import DEFAULT_ROOT, ResultCache, open_store
 
 RECORDS_NAME: Final = "records.csv"
@@ -75,12 +74,14 @@ def check(
     result = CheckResult(records)
     documents = list_documents(manual_dir)
     for name in documents:
-        rows = [row for row in records.rows if row.get("file", "").strip() == name]
+        # Compare without surrounding spaces on both sides: a file named "a.pdf "
+        # must still find its row, or every run would add another one.
+        rows = [row for row in records.rows if row.get("file", "").strip() == name.strip()]
         if rows and all(row.get(column, "").strip() for row in rows for column in PREFILLED):
             continue  # every kit cell already filled: nothing to inspect
         facts: FileFacts = inspect_file(manual_dir / name, ocr=ocr, cache=cache, limits=limits)
         if facts.problem:
-            result.problems.append(f"`{name}`: {facts.problem}")
+            result.problems.append(f"{code(name)}: {facts.problem}")
         if not rows:
             row = dict.fromkeys(records.header, "")
             row["file"] = name
@@ -89,11 +90,11 @@ def check(
             result.new_rows += 1
         for row in rows:
             result.filled_cells += len(fill_blanks(row, facts.prefill()))
-    known = set(documents)
+    known = {name.strip() for name in documents}
     for row in records.rows:
         name = row.get("file", "").strip()
         if name and name not in known:
-            result.problems.append(f"records.csv names `{name}`, but there is no such file")
+            result.problems.append(f"records.csv names {code(name)}, but there is no such file")
     return result
 
 
@@ -106,9 +107,7 @@ def run(manual_dir: Path, *, ocr: bool, store_root: Path) -> str:
         result = check(manual_dir, ocr=False)
     if result.changed:
         write_records(manual_dir / RECORDS_NAME, result.records)
-    summary = render_summary(
-        result.records.rows, result.problems, now_ist().isoformat(timespec="minutes")
-    )
+    summary = render_summary(result.records.rows, result.problems)
     (manual_dir / SUMMARY_NAME).write_text(summary, encoding="utf-8")
     changes = (
         f"{result.new_rows} new rows, {result.filled_cells} cells filled"
