@@ -27,6 +27,7 @@ pytest                      # tests
 pip-audit --skip-editable   # dependencies with known vulnerabilities
 python -m tenderscreen.devtools.licence_check  # fail on GPL, LGPL or AGPL dependencies
 pytest --no-cov tests/<path>  # subset of tests; plain pytest fails below 90% coverage of src/
+pytest -m "not slow" --no-cov  # fast tests only (what the post-edit hook runs); slow = OCR, files of 1 MB+
 ```
 
 Run all five before every commit. CI (`.github/workflows/ci.yml`) runs the same

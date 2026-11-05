@@ -1,12 +1,13 @@
 # Overnight task list
 
 Saved verbatim from the user's prompt on 2026-11-04. Tick each task when done.
-Re-read this file before starting each task.
+Re-read this file before starting each task. Item 3 of TASK A was added by the
+user on 2026-11-05.
 
 ## Progress
 
 - [x] Setup: branch, environment, docs/decisions.md
-- [x] TASK A: Quality gates
+- [ ] TASK A: Quality gates (item 3 added 2026-11-05)
 - [x] TASK B: Indian money and date parsing
 - [x] TASK C: PDF text extraction and OCR
 - [x] TASK D: Document store with dedupe and caching
@@ -56,6 +57,9 @@ TASK A: QUALITY GATES
 1. Add pytest-cov; CI fails below 90% line coverage for src/.
 2. Add a CI step that fails if any installed dependency has a GPL,
    LGPL or AGPL licence.
+3. Add a "slow" pytest marker. The post-edit hook runs only fast tests
+   (-m "not slow"); the per-task check and CI always run the full suite.
+   Mark OCR and large-file tests as slow.
 Acceptance: the same commands pass in this session.
 
 TASK B: INDIAN MONEY AND DATE PARSING (src/tenderscreen/parsing/)

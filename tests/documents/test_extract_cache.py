@@ -163,6 +163,7 @@ def test_failures_are_not_cached(tmp_path: Path, cache: ResultCache, db: Path) -
     assert run_sql(db, "SELECT COUNT(*) FROM step_results") == [(0,)]
 
 
+@pytest.mark.slow
 def test_ocr_results_are_cached(
     tmp_path: Path, cache: ResultCache, tesseract: Tesseract, monkeypatch: pytest.MonkeyPatch
 ) -> None:

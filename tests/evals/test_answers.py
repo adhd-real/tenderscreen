@@ -141,6 +141,7 @@ def test_unreadable_json_is_an_error(tmp_path: Path, content: bytes) -> None:
         parse_file(path)
 
 
+@pytest.mark.slow
 def test_oversized_file_is_an_error(tmp_path: Path) -> None:
     path = tmp_path / "huge.json"
     path.write_bytes(b" " * (MAX_FILE_BYTES + 1))

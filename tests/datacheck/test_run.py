@@ -186,6 +186,7 @@ def test_files_with_every_kit_cell_filled_are_not_inspected_again(
 # Moved from test_ocr_path.py, which mirrored no module.
 
 
+@pytest.mark.slow
 def test_second_run_uses_the_cache_not_ocr(
     tmp_path: Path, tesseract: Tesseract, monkeypatch: pytest.MonkeyPatch
 ) -> None:

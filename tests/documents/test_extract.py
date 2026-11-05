@@ -64,6 +64,7 @@ def test_accepts_str_path(tmp_path: Path) -> None:
     assert extract_pages(str(path), settings=NO_OCR)[0].page_number == 1
 
 
+@pytest.mark.slow
 def test_scanned_page_is_ocred(tmp_path: Path, tesseract: Tesseract) -> None:
     path = build_pdf(tmp_path / "scan.pdf", [ScannedPage()])
     (page,) = extract_pages(path)
@@ -76,6 +77,7 @@ def test_scanned_page_is_ocred(tmp_path: Path, tesseract: Tesseract) -> None:
     assert page.ocr_confidence is not None
 
 
+@pytest.mark.slow
 def test_mixed_document_gets_the_right_method_on_each_page(
     tmp_path: Path, tesseract: Tesseract
 ) -> None:
@@ -105,6 +107,7 @@ def test_hindi_text_layer(tmp_path: Path, devanagari_font: str) -> None:
     assert all(line in page.text for line in HINDI_NOTICE)
 
 
+@pytest.mark.slow
 def test_hindi_scan_is_ocred(tmp_path: Path, tesseract: Tesseract, devanagari_font: str) -> None:
     path = build_pdf(tmp_path / "hindi.pdf", [ScannedPage(HINDI_NOTICE, font_path=devanagari_font)])
     (page,) = extract_pages(path)
@@ -271,6 +274,7 @@ def test_worker_that_cannot_start_is_a_clear_error(
 
 
 @pytest.mark.parametrize("build", [build_offset_mediabox_scan, build_form_wrapped_scan])
+@pytest.mark.slow
 def test_scans_in_unusual_page_geometry_are_ocred(
     tmp_path: Path, tesseract: Tesseract, build: Callable[[Path], Path]
 ) -> None:

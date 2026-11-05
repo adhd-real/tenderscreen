@@ -171,6 +171,7 @@ def test_ocr_page_reports_render_failure(tmp_path: Path) -> None:
     assert outcome.error.startswith("rendering failed")
 
 
+@pytest.mark.slow
 def test_ocr_page_with_real_tesseract(tmp_path: Path, tesseract: Tesseract) -> None:
     pdf = build_pdf(tmp_path / "scan.pdf", [ScannedPage()])
     outcome = ocr_page(make_task(pdf, tesseract.path))
@@ -181,6 +182,7 @@ def test_ocr_page_with_real_tesseract(tmp_path: Path, tesseract: Tesseract) -> N
     assert outcome.confidence > 80
 
 
+@pytest.mark.slow
 def test_ocr_page_reads_hindi(tmp_path: Path, tesseract: Tesseract, devanagari_font: str) -> None:
     pdf = build_pdf(tmp_path / "hindi.pdf", [ScannedPage(HINDI_NOTICE, font_path=devanagari_font)])
     outcome = ocr_page(make_task(pdf, tesseract.path))

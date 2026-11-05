@@ -155,6 +155,7 @@ def test_vanished_file_is_a_problem_not_a_crash(tmp_path: Path) -> None:
 # The OCR path (moved from test_ocr_path.py, which mirrored no module).
 
 
+@pytest.mark.slow
 def test_scanned_pdf_language_comes_from_ocr(tmp_path: Path, tesseract: Tesseract) -> None:
     path = build_pdf(tmp_path / "scan.pdf", [LONG_SCAN])
     with open_store(tmp_path / "raw") as store:
@@ -326,6 +327,7 @@ def test_html_language_problems_are_reported_not_raised(
     assert inspect_file(path, ocr=False) == FileFacts("html", "text (html)", problem=problem)
 
 
+@pytest.mark.slow
 def test_html_parse_is_stopped_after_the_time_limit(tmp_path: Path) -> None:
     path = tmp_path / "slow.html"
     path.write_text("<p>Award of contract</p>" * 100_000, encoding="utf-8")  # 2.4 MB to parse

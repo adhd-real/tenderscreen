@@ -126,6 +126,7 @@ def test_failed_write_leaves_no_temporary_file(
     assert stored_files(store) == []
 
 
+@pytest.mark.slow
 def test_sha256_file_matches_bytes(tmp_path: Path) -> None:
     path = tmp_path / "f.bin"
     content = b"x" * (3 * 1024 * 1024 + 7)  # spans several read chunks

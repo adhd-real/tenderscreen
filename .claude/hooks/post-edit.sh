@@ -1,6 +1,6 @@
 #!/bin/bash
 # PostToolUse hook: after Claude edits a Python file, format and lint that file
-# and run the test suite. Exit code 2 sends the problems back to Claude to fix.
+# and run the fast tests. Exit code 2 sends the problems back to Claude to fix.
 set -uo pipefail
 
 project_dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
@@ -35,8 +35,11 @@ if ! out="$("$bin/ruff" check --quiet "$file_path" 2>&1)"; then
   add_failure "ruff check $file_path" "$out"
 fi
 
-if ! out="$("$bin/pytest" -x -q --no-header 2>&1)"; then
-  add_failure "pytest -x (last 60 lines)" "$(tail -n 60 <<<"$out")"
+# Fast tests only: tests marked slow (real-Tesseract OCR, files of 1 MB or
+# more) are left to plain `pytest`, which the check before every commit and CI
+# run. --no-cov: the 90% coverage gate applies to the full suite, not a subset.
+if ! out="$("$bin/pytest" -x -q --no-header -m "not slow" --no-cov 2>&1)"; then
+  add_failure "pytest -x -m 'not slow' (last 60 lines)" "$(tail -n 60 <<<"$out")"
 fi
 
 if [ -n "$report" ]; then

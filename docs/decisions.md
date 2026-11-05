@@ -67,6 +67,31 @@ Choices made while working unattended, with the reason for each. Newest last.
   before every commit" was left as is (I may not edit rule text), so it now
   undercounts; you may want to change it to "all of these".
 
+### Slow marker (item 3, added by you on 2026-11-05)
+
+- `slow` is registered in pyproject.toml; `--strict-markers` was already on, so
+  a misspelt marker is an error. The post-edit hook runs
+  `pytest -x -q -m "not slow" --no-cov`; plain `pytest` (the check before every
+  commit) and CI still run everything, with the coverage gate. The hook skips
+  coverage because the 90% gate is meant for the full suite, and a subset
+  could fail it for reasons unrelated to the edit.
+- **"OCR tests" means tests that run the real Tesseract**: the ones that use
+  the `tesseract` fixture, which skip locally without it (your wording in Task
+  C). That is 10 tests. A guard in `tests/conftest.py` stops any run in which
+  a test uses the fixture without `@pytest.mark.slow`, so a new OCR test cannot
+  slip into the hook.
+- **"Large-file tests" means tests that write a file of 1 MB or more**: three
+  (a 2.4 MB HTML page, a 3 MB document for chunked hashing, a 5 MB labels
+  file). The oversized-file tests elsewhere use tiny limits on tiny files, so
+  they stay fast.
+- **Measured:** the hook's test step took 64.8 s before (1,006 tests, with
+  coverage) and 52.7 s now (999 tests, 13 deselected). Of what remains, about
+  28 s is tests that wait for a timeout or a kill on purpose (sandbox, a fake
+  Tesseract that hangs, PDF bombs), and most of the rest is starting worker
+  processes. They are neither OCR nor large-file tests, so I left them
+  unmarked; marking the timeout tests would be the next step if the hook
+  should be faster.
+
 ## Task B: Indian money and date parsing
 
 ### Result types: a value or a reason, never both
