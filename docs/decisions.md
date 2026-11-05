@@ -363,6 +363,26 @@ fixed and tested:
 - Cached pages are JSON with a strict decoder (exact keys, types, enum values,
   pages numbered 1..n). Anything else is treated as corrupt and recomputed.
 
+### Found in the Task D review (fixed in a follow-up commit)
+
+- **Concurrent first opens could corrupt a new store**: the schema check
+  selected, then inserted, so several processes could write two version rows,
+  after which every open failed. The version table now has a single fixed row
+  (`id = 1`), setup runs in one `BEGIN IMMEDIATE` transaction, and "database is
+  locked" during setup is retried. WAL mode is set only once.
+- A document row and its source are now written in one transaction, and the
+  folder is fsynced after the atomic rename.
+- Every `sqlite3` error surfaces as `StoreError` (callers never depend on the
+  database library). The `StoreBackend` protocol has seven methods; a Postgres
+  version would use `BYTEA` instead of `BLOB`.
+- Any decode failure (not only `ValueError`) discards a cache entry; a huge
+  `ocr_confidence` no longer crashes the decoder.
+- Source URLs must be `http:`, `https:` or `file:` with no spaces or invisible
+  characters (`javascript:` and `data:` were accepted before).
+- Content sniffing recognises HTML that starts with a comment ("saved from
+  url"), with `<head>`, or as XHTML with an XML prolog.
+- `**/data/raw/` is ignored by git wherever the store is opened from.
+
 ## Task E: Evaluation harness
 
 ### Files and pairing
@@ -414,6 +434,45 @@ fixed and tested:
 - A prediction file that is not readable JSON makes every field of that
   document `invalid`, with the JSON error as the reason.
 
+### Found in the Task E review (fixed in a follow-up commit)
+
+- **Hostile JSON**: very deep nesting (`RecursionError`), huge numbers and
+  `NaN`/`Infinity` crashed the run or slipped through; repeated keys silently
+  kept the last value. All are now a clean "not valid UTF-8 JSON" problem for
+  that file (a label stops the run; a prediction scores every field invalid). A
+  byte-order mark is accepted (Notepad and Excel add one).
+- **An unreadable predicted value is no longer "invalid"**: "within 21 days of
+  LoA" for a date field claims a value exists, so it counts as **invented** when
+  the label says `not_found` and **wrong** otherwise. Only a missing or
+  malformed entry (wrong keys, no file) stays invalid.
+- **Contact data**: error messages and the report's "invalid" details for
+  contact-like fields never repeat the value, and every detail is shortened.
+- **Markdown injection**: field names, document names and values are flattened
+  to one line, with `|` and backticks replaced, so a crafted prediction cannot
+  add rows, headings or links to the report.
+- **Labels write money as text**: a bare number in a label is refused, because
+  it would be read as paise (`2500` would mean ₹ 25). Predictions may still give
+  integer paise, since the pipeline stores int paise.
+- **Field names are checked against `_template.json`** when it is in the labels
+  folder, so a typo such as `award_dat` is an error rather than a new field. A
+  template without a `"fields"` object stops the run.
+- **`pbg_deadline` renamed `pbg_deadline_text`**: the deadline is usually
+  relative ("within 21 days of LoA"), so it is compared as text; a `_deadline`
+  name would have forced a calendar date. docs/labelling.md says the two PBG
+  fields are separate facts.
+- The template's `source_page` is `"TODO"` too, so an unfilled page number is
+  caught. Only the placeholder counts as TODO: "TODO" or "TODO: ..."; a bidder
+  named "Todo Enterprises" or a file "PHOTODOC.pdf" is not.
+- Text comparison drops invisible characters (zero-width space, joiners, word
+  joiner, byte-order mark, soft hyphen), which PDFs often contain.
+- A prediction whose `"document"` names another file than its label is listed
+  under Problems, since it was probably paired with the wrong label.
+- `--out` pointing at a file (or an unwritable folder) is a clean error
+  (exit 2).
+- docs/labelling.md now covers JSON punctuation (commas, `\"`, joining
+  multi-line quotes), the template field-name check, money as text, and that a
+  cloud session sees labels only once they are on `main`.
+
 ## Task F: Data check kit
 
 ### records.csv
@@ -458,23 +517,3 @@ fixed and tested:
   `records.csv` and `README.md` when listing documents). Writing these two files
   into data/manual/ was asked for; the uploaded documents themselves are only
   ever read (CLAUDE.md layout rule).
-
-### Found in the Task D review (fixed in a follow-up commit)
-
-- **Concurrent first opens could corrupt a new store**: the schema check
-  selected, then inserted, so several processes could write two version rows,
-  after which every open failed. The version table now has a single fixed row
-  (`id = 1`), setup runs in one `BEGIN IMMEDIATE` transaction, and "database is
-  locked" during setup is retried. WAL mode is set only once.
-- A document row and its source are now written in one transaction, and the
-  folder is fsynced after the atomic rename.
-- Every `sqlite3` error surfaces as `StoreError` (callers never depend on the
-  database library). The `StoreBackend` protocol has seven methods; a Postgres
-  version would use `BYTEA` instead of `BLOB`.
-- Any decode failure (not only `ValueError`) discards a cache entry; a huge
-  `ocr_confidence` no longer crashes the decoder.
-- Source URLs must be `http:`, `https:` or `file:` with no spaces or invisible
-  characters (`javascript:` and `data:` were accepted before).
-- Content sniffing recognises HTML that starts with a comment ("saved from
-  url"), with `<head>`, or as XHTML with an XML prolog.
-- `**/data/raw/` is ignored by git wherever the store is opened from.

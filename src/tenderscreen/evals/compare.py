@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from tenderscreen.evals.answers import Answer, DocumentAnswers, Found, ParsedFile
+from tenderscreen.evals.answers import Answer, DocumentAnswers, Found, NotFound, ParsedFile
 
 
 class Outcome(StrEnum):
@@ -40,6 +40,13 @@ def compare_document(labels: DocumentAnswers, predicted: ParsedFile | None) -> l
     results = []
     for field, label in labels.fields.items():
         prediction = predicted.answers.get(field) if predicted else None
+        if prediction is None and predicted is not None and field in predicted.claimed:
+            # The prediction says a value exists but it cannot be read: a value
+            # where the label has none is an invention, otherwise it is wrong.
+            outcome = Outcome.INVENTED if isinstance(label, NotFound) else Outcome.WRONG
+            detail = "unreadable value: " + predicted.field_errors.get(field, "")
+            results.append(FieldResult(labels.doc_id, field, outcome, label, None, detail))
+            continue
         if prediction is None:
             detail = "no prediction file"
             if predicted is not None:

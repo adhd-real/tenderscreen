@@ -1,9 +1,23 @@
+import json
 from datetime import datetime
 from pathlib import Path
 
 from tenderscreen.evals import evaluate
 from tenderscreen.evals.answers import Found, NotFound
-from tenderscreen.evals.report import format_paise, render_markdown, show, summary_json
+from tenderscreen.evals.compare import FieldStats
+from tenderscreen.evals.report import (
+    _percent,
+    _ratio,
+    _stats_json,
+    _stats_row,
+    code,
+    format_paise,
+    plain,
+    render_markdown,
+    show,
+    show_detail,
+    summary_json,
+)
 from tenderscreen.ist import IST
 from tests.evals.dataset import LABELS, NOT_FOUND, answer, write_folder
 
@@ -96,3 +110,111 @@ def test_format_paise_uses_indian_grouping() -> None:
 def test_money_is_shown_in_rupees() -> None:
     answer = Found("Rs. 25 lakh", 250_000_000, 2, "q")
     assert show("contract_value_paise", answer) == "\u20b9 25,00,000.00 (p. 2)"
+
+
+# Found in review: names and details come from files anyone can edit, so they
+# must not break the Markdown, and private details must never be shown.
+
+
+def test_plain_flattens_escapes_and_shortens() -> None:
+    assert plain("short") == "short"
+    assert plain("a\n| b`c\t d") == "a / b'c d"
+    assert plain("x" * 60) == "x" * 60
+    assert plain("x" * 61) == "x" * 57 + "..."
+    assert plain("abcdefgh", limit=5) == "ab..."
+
+
+def test_code_cannot_break_out_of_inline_code_or_a_table() -> None:
+    assert code("award_a") == "`award_a`"
+    assert code("x`](http://bad)|\n# Heading") == "`x'](http://bad)/ # Heading`"
+    assert code("y" * 100) == "`" + "y" * 77 + "...`"
+
+
+def test_show_detail_hides_contact_data_and_shortens() -> None:
+    assert show_detail("award_date", "not a date") == "not a date"
+    assert show_detail("award_date", "z" * 200) == "z" * 117 + "..."
+    assert show_detail("contact_phone", "0000-111111") == "(details hidden: contact data)"
+
+
+def test_percent_and_ratio_handle_no_data() -> None:
+    assert _percent(None) == "n/a"
+    assert _percent(0.0) == "0%"
+    assert _percent(2 / 3) == "67%"
+    assert _percent(1.0) == "100%"
+    assert _ratio(None) is None
+    assert _ratio(2 / 3) == 0.6667
+    assert _ratio(1.0) == 1.0
+
+
+def test_stats_row_and_json_with_and_without_data() -> None:
+    stats = FieldStats(total=4, correct=2, wrong=1, missed=1, pages_checked=2, pages_matched=1)
+    row = "| `f` | money | 4 | 2 | 50% | 1 | 1 | 0 | 0 | 50% |"
+    assert _stats_row("`f`", "money", stats) == row
+    assert _stats_json(stats) == {
+        "labelled": 4,
+        "correct": 2,
+        "accuracy": 0.5,
+        "wrong": 1,
+        "missed": 1,
+        "invented": 0,
+        "invalid": 0,
+        "page_agreement": 0.5,
+    }
+    empty = FieldStats()
+    assert _stats_row("x", "", empty) == "| x |  | 0 | 0 | n/a | 0 | 0 | 0 | 0 | n/a |"
+    assert _stats_json(empty)["accuracy"] is None
+    assert _stats_json(empty)["page_agreement"] is None
+
+
+def test_page_agreement_is_n_a_when_nothing_was_correct(tmp_path: Path) -> None:
+    predictions = {doc: dict(fields) for doc, fields in LABELS.items()}
+    predictions["award_a"]["successful_bidder_name"] = answer("Other Name")
+    predictions["award_b"]["successful_bidder_name"] = answer("Another Name")
+    markdown, summary = render(tmp_path, predictions)
+    assert "| `successful_bidder_name` | text | 2 | 0 | 0% | 2 | 0 | 0 | 0 | n/a |" in markdown
+    fields = summary["fields"]
+    assert isinstance(fields, dict)
+    assert fields["successful_bidder_name"]["page_agreement"] is None
+
+
+def test_hostile_names_and_values_stay_inside_their_cells(tmp_path: Path) -> None:
+    labels = write_folder(tmp_path / "labels", {"doc": {"tender_id": answer("T-1")}})
+    hostile = "T-2 |\n## Injected heading\n`code`"
+    predictions = write_folder(
+        tmp_path / "pred",
+        {"doc": {"tender_id": answer(hostile), "x|y\n# z": answer("v")}},
+    )
+    evaluation = evaluate(labels, predictions)
+    args = (evaluation.results, evaluation.per_field, evaluation.overall, evaluation.inventory)
+    markdown = render_markdown(*args, WHEN)
+    assert "\n## Injected heading" not in markdown
+    row = "| `tender_id` | wrong | T-1 (p. 1) | T-2 / ## Injected heading 'code' (p. 1) |"
+    assert row in markdown
+    assert "- Predicted field not in labels (ignored): `doc: x/y # z`" in markdown
+
+
+def test_unreadable_and_invalid_details_are_shown_safely(tmp_path: Path) -> None:
+    predictions = {doc: dict(fields) for doc, fields in LABELS.items()}
+    predictions["award_a"]["award_date"] = answer("within 21 days of LoA")  # unreadable
+    predictions["award_a"]["contact_details"] = answer(None)  # invalid contact value
+    markdown, _ = render(tmp_path, predictions)
+    assert "| `award_date` | wrong | 15/10/2026 (p. 1) | unreadable value: not a date" in markdown
+    assert "| `contact_details` | wrong | (hidden: contact data) |" in markdown
+    assert "(details hidden: contact data) |" in markdown
+    assert "None" not in markdown.split("## Mistakes by document")[1]
+
+
+def test_document_name_mismatch_is_a_problem(tmp_path: Path) -> None:
+    labels = write_folder(tmp_path / "labels", LABELS)
+    predictions = write_folder(tmp_path / "pred", LABELS)
+    data = json.loads((predictions / "award_a.json").read_text(encoding="utf-8"))
+    data["document"] = "other|file.pdf"
+    (predictions / "award_a.json").write_text(json.dumps(data), encoding="utf-8")
+    evaluation = evaluate(labels, predictions)
+    args = (evaluation.results, evaluation.per_field, evaluation.overall, evaluation.inventory)
+    markdown = render_markdown(*args, WHEN)
+    assert (
+        "- Document name differs (check the pairing): award_a: label names award_a.pdf, "
+        "prediction names other/file.pdf" in markdown
+    )
+    assert summary_json(*args, WHEN)["document_mismatches"] == 1

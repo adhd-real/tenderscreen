@@ -1,18 +1,15 @@
 """Render evaluation results as a Markdown report and a JSON summary."""
 
-import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final
 
 from tenderscreen.evals.answers import Answer, Found
 from tenderscreen.evals.compare import FieldResult, FieldStats, Outcome
-from tenderscreen.evals.fields import FieldKind, field_kind
+from tenderscreen.evals.fields import FieldKind, field_kind, is_private_field
 
-# Fields whose values may hold personal contact data; reports never show them
-# (CLAUDE.md: never log phone numbers).
-_PRIVATE_FIELD: Final = re.compile(r"contact|phone|mobile|email|e_mail|address", re.IGNORECASE)
 _MAX_SHOWN: Final = 60
+_MAX_NAME: Final = 80
 
 EXPLANATION: Final = (
     "- **Missed**: the label has an answer, but the prediction said not_found.\n"
@@ -35,6 +32,19 @@ class Inventory:
     without_prediction: list[str]
     without_label: list[str]
     unlabelled_fields: list[str]  # "doc_id: field" predicted but not labelled
+    # "doc_id: label names X, prediction names Y": probably paired with the wrong label
+    document_mismatches: list[str] = field(default_factory=list)
+
+
+def plain(text: str, limit: int = _MAX_SHOWN) -> str:
+    """Text made safe for one Markdown table cell or list item, and shortened."""
+    flat = " ".join(text.split()).replace("|", "/").replace("`", "'")
+    return flat if len(flat) <= limit else flat[: limit - 3] + "..."
+
+
+def code(text: str) -> str:
+    """A name (field, document) as inline code that cannot break the Markdown."""
+    return f"`{plain(text, _MAX_NAME)}`"
 
 
 def _percent(ratio: float | None) -> str:
@@ -65,14 +75,16 @@ def show(field: str, answer: Answer | None) -> str:
         return "(none)"
     if not isinstance(answer, Found):
         return "not_found"
-    if _PRIVATE_FIELD.search(field):
+    if is_private_field(field):
         return "(hidden: contact data)"
     if field_kind(field) is FieldKind.MONEY and isinstance(answer.value, int):
         return f"{format_paise(answer.value)} (p. {answer.source_page})"
-    text = " ".join(str(answer.raw_value).split())
-    if len(text) > _MAX_SHOWN:
-        text = text[: _MAX_SHOWN - 3] + "..."
-    return f"{text.replace('|', '/')} (p. {answer.source_page})"
+    return f"{plain(str(answer.raw_value))} (p. {answer.source_page})"
+
+
+def show_detail(field: str, detail: str) -> str:
+    """Why a prediction is invalid or unreadable; never contact data, never long."""
+    return "(details hidden: contact data)" if is_private_field(field) else plain(detail, 120)
 
 
 def _stats_row(name: str, kind: str, stats: FieldStats) -> str:
@@ -111,13 +123,20 @@ def render_markdown(
         " | Invalid | Page agreement |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    lines += [_stats_row(f"`{name}`", field_kind(name), s) for name, s in per_field.items()]
+    lines += [_stats_row(code(name), field_kind(name), s) for name, s in per_field.items()]
     lines += [_stats_row("**All fields**", "", overall), "", EXPLANATION]
 
     problems = [
-        *(f"No prediction for labelled document `{d}`" for d in inventory.without_prediction),
-        *(f"Prediction without labels (ignored): `{d}`" for d in inventory.without_label),
-        *(f"Predicted field not in labels (ignored): `{f}`" for f in inventory.unlabelled_fields),
+        *(f"No prediction for labelled document {code(d)}" for d in inventory.without_prediction),
+        *(f"Prediction without labels (ignored): {code(d)}" for d in inventory.without_label),
+        *(
+            f"Predicted field not in labels (ignored): {code(f)}"
+            for f in inventory.unlabelled_fields
+        ),
+        *(
+            f"Document name differs (check the pairing): {plain(m, 200)}"
+            for m in inventory.document_mismatches
+        ),
     ]
     if problems:
         lines += ["## Problems", "", *(f"- {p}" for p in problems), ""]
@@ -128,7 +147,7 @@ def render_markdown(
         lines += ["None: every field matched its label.", ""]
     for doc_id in sorted({r.doc_id for r in mistakes}):
         lines += [
-            f"### `{doc_id}`",
+            f"### {code(doc_id)}",
             "",
             "| Field | Outcome | Label | Prediction |",
             "|---|---|---|---|",
@@ -136,8 +155,11 @@ def render_markdown(
         for r in (m for m in mistakes if m.doc_id == doc_id):
             predicted = show(r.field, r.prediction)
             if r.outcome is Outcome.INVALID:
-                predicted = f"invalid: {r.detail.replace('|', '/')}"
-            lines.append(f"| `{r.field}` | {r.outcome} | {show(r.field, r.label)} | {predicted} |")
+                predicted = f"invalid: {show_detail(r.field, r.detail)}"
+            elif r.prediction is None:  # a value the prediction claims but that is unreadable
+                predicted = show_detail(r.field, r.detail)
+            label = show(r.field, r.label)
+            lines.append(f"| {code(r.field)} | {r.outcome} | {label} | {predicted} |")
         lines.append("")
     return "\n".join(lines)
 
@@ -174,6 +196,7 @@ def summary_json(
             "without_label": inventory.without_label,
         },
         "unlabelled_fields": inventory.unlabelled_fields,
+        "document_mismatches": len(inventory.document_mismatches),
         "fields": {
             name: {"kind": str(field_kind(name)), **_stats_json(s)} for name, s in per_field.items()
         },

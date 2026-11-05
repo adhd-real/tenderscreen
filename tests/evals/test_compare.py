@@ -55,8 +55,9 @@ def test_missing_and_malformed_predicted_fields_are_invalid(tmp_path: Path) -> N
     results = {r.field: r for r in compare_document(labels, predicted)}
     assert results["contract_value_paise"].outcome is Outcome.INVALID
     assert results["contract_value_paise"].detail == "field missing from prediction"
-    assert results["pbg_percentage"].outcome is Outcome.INVALID
-    assert results["pbg_percentage"].detail.startswith("not a number")
+    # An unreadable value where the label has one counts as wrong (found in review).
+    assert results["pbg_percentage"].outcome is Outcome.WRONG
+    assert results["pbg_percentage"].detail.startswith("unreadable value: not a number")
 
 
 def test_broken_prediction_structure_is_explained(tmp_path: Path) -> None:
@@ -98,3 +99,14 @@ def test_tally_sorts_fields_and_totals() -> None:
 
 def test_not_found_constant_is_the_claude_md_shape() -> None:
     assert NOT_FOUND == {"status": "not_found"}
+
+
+def test_unreadable_value_where_label_is_not_found_is_an_invention(tmp_path: Path) -> None:
+    """Found in review: "within 21 days of LoA" for a date field used to count as
+    invalid, hiding that the prediction claimed a value the label says is absent."""
+    labels = load_answers(write_folder(tmp_path / "l", LABELS) / "award_b.json")
+    fields = dict(LABELS["award_b"])
+    fields["award_date"] = answer("within 21 days of LoA")
+    predicted = parse_file(write_folder(tmp_path / "p", {"award_b": fields}) / "award_b.json")
+    results = {r.field: r for r in compare_document(labels, predicted)}
+    assert results["award_date"].outcome is Outcome.INVENTED

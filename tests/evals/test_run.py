@@ -171,3 +171,86 @@ def test_main_module_in_process(
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("tenderscreen.evals", run_name="__main__")
     assert exc.value.code == 0
+
+
+# Found in review.
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"document": "award_b.pdf", "document": "x.pdf", "fields": {}}',  # repeated key
+        '{"document": "award_b.pdf", "fields": {"number_of_bids": NaN}}',
+        "[" * 100_000,  # nested too deep for the parser
+        "﻿{",  # byte-order mark, then broken JSON
+    ],
+)
+def test_hostile_prediction_file_is_scored_invalid_not_a_crash(
+    labels_dir: Path, tmp_path: Path, content: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pred = write_folder(tmp_path / "pred", {"award_a": LABELS["award_a"]})
+    (pred / "award_b.json").write_text(content, encoding="utf-8")
+    evaluation = evaluate(labels_dir, pred)
+    assert evaluation.overall.invalid == 6  # every award_b field
+    assert main([str(labels_dir), str(pred), "--out", str(tmp_path / "out")]) == 0
+    capsys.readouterr()
+
+
+def test_unwritable_output_folder_is_a_clean_error(
+    labels_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pred = write_folder(tmp_path / "pred", LABELS)
+    blocker = tmp_path / "out"
+    blocker.write_text("a file, not a folder", encoding="utf-8")
+    assert main([str(labels_dir), str(pred), "--out", str(blocker)]) == 2
+    assert "error: cannot write the report to" in capsys.readouterr().err
+
+
+def test_label_field_names_are_checked_against_the_template(tmp_path: Path) -> None:
+    labels = write_folder(
+        tmp_path / "labels", {"award_a": {"award_dat": NOT_FOUND, "award_date": NOT_FOUND}}
+    )
+    template = {"document": "TODO", "fields": {"award_date": {}, "number_of_bids": {}}}
+    (labels / "_template.json").write_text(json.dumps(template), encoding="utf-8")
+    with pytest.raises(LabelsError) as caught:
+        evaluate(labels, write_folder(tmp_path / "pred", {}))
+    assert caught.value.problems == [
+        "award_a.json: award_dat: not a field in _template.json (a typo?)"
+    ]
+
+
+def test_broken_template_stops_the_evaluation(tmp_path: Path) -> None:
+    labels = write_folder(tmp_path / "labels", {"award_a": {"award_date": NOT_FOUND}})
+    (labels / "_template.json").write_text('{"document": "TODO"}', encoding="utf-8")
+    with pytest.raises(LabelsError) as caught:
+        evaluate(labels, write_folder(tmp_path / "pred", {}))
+    assert caught.value.problems == ['_template.json: the template needs a "fields" object']
+
+
+def test_committed_template_accepts_its_own_field_names(tmp_path: Path) -> None:
+    template = Path(__file__).resolve().parents[2] / "data" / "labels" / "_template.json"
+    labels = write_folder(tmp_path / "labels", {"doc": {"pbg_deadline_text": NOT_FOUND}})
+    (labels / "_template.json").write_bytes(template.read_bytes())
+    evaluation = evaluate(labels, write_folder(tmp_path / "pred", {}))
+    assert evaluation.overall.invalid == 1  # no prediction, but the labels are accepted
+
+
+def test_document_name_mismatch_is_recorded(labels_dir: Path, tmp_path: Path) -> None:
+    pred = write_folder(tmp_path / "pred", LABELS)
+    data = json.loads((pred / "award_b.json").read_text(encoding="utf-8"))
+    data["document"] = "award_c.pdf"
+    (pred / "award_b.json").write_text(json.dumps(data), encoding="utf-8")
+    inventory = evaluate(labels_dir, pred).inventory
+    assert inventory.document_mismatches == [
+        "award_b: label names award_b.pdf, prediction names award_c.pdf"
+    ]
+
+
+def test_matching_or_blank_document_names_are_not_mismatches(
+    labels_dir: Path, tmp_path: Path
+) -> None:
+    pred = write_folder(tmp_path / "pred", LABELS)
+    data = json.loads((pred / "award_b.json").read_text(encoding="utf-8"))
+    data["document"] = ""  # a blank name is a file problem, not a pairing problem
+    (pred / "award_b.json").write_text(json.dumps(data), encoding="utf-8")
+    assert evaluate(labels_dir, pred).inventory.document_mismatches == []

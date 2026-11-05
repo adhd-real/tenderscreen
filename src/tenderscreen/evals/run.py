@@ -21,6 +21,7 @@ from tenderscreen.evals.answers import (
     answer_files,
     load_answers,
     parse_file,
+    template_fields,
 )
 from tenderscreen.evals.compare import FieldResult, FieldStats, compare_document, tally
 from tenderscreen.evals.report import Inventory, render_markdown, summary_json
@@ -49,11 +50,15 @@ def evaluate(labels_dir: Path, predictions_dir: Path) -> Evaluation:
     prediction_paths = answer_files(predictions_dir)
     if not label_paths:
         raise LabelsError([f"no label files (*.json) in {labels_dir}"])
+    try:
+        known_fields = template_fields(labels_dir)
+    except AnswerFileError as exc:
+        raise LabelsError([f"_template.json: {problem}" for problem in exc.problems]) from exc
 
     labels, problems = [], []
     for path in label_paths.values():
         try:
-            labels.append(load_answers(path))
+            labels.append(load_answers(path, known_fields=known_fields))
         except AnswerFileError as exc:
             problems += [f"{path.name}: {problem}" for problem in exc.problems]
     if problems:
@@ -61,6 +66,7 @@ def evaluate(labels_dir: Path, predictions_dir: Path) -> Evaluation:
 
     results: list[FieldResult] = []
     unlabelled_fields: list[str] = []
+    mismatches: list[str] = []
     for doc in labels:
         prediction_path = prediction_paths.get(doc.doc_id)
         predicted = None
@@ -74,6 +80,11 @@ def evaluate(labels_dir: Path, predictions_dir: Path) -> Evaluation:
                     (set(predicted.answers) | set(predicted.field_errors)) - set(doc.fields)
                 )
                 unlabelled_fields += [f"{doc.doc_id}: {name}" for name in extra]
+                if predicted.document and predicted.document != doc.document:
+                    mismatches.append(
+                        f"{doc.doc_id}: label names {doc.document}, "
+                        f"prediction names {predicted.document}"
+                    )
         results += compare_document(doc, predicted)
 
     per_field, overall = tally(results)
@@ -85,6 +96,7 @@ def evaluate(labels_dir: Path, predictions_dir: Path) -> Evaluation:
         without_prediction=sorted(set(label_paths) - set(prediction_paths)),
         without_label=sorted(set(prediction_paths) - set(label_paths)),
         unlabelled_fields=unlabelled_fields,
+        document_mismatches=mismatches,
     )
     return Evaluation(results, per_field, overall, inventory)
 
@@ -126,6 +138,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         for problem in exc.problems:
             print(f"  - {problem}", file=sys.stderr)
         return 2
-    print(write_outputs(evaluation, args.out, now_ist()))
+    try:
+        markdown = write_outputs(evaluation, args.out, now_ist())
+    except OSError as exc:
+        print(f"error: cannot write the report to {args.out}: {exc}", file=sys.stderr)
+        return 2
+    print(markdown)
     print(f"\nWrote {args.out / 'report.md'} and {args.out / 'summary.json'}", file=sys.stderr)
     return 0

@@ -19,7 +19,11 @@ def test_unfilled_template_is_rejected_field_by_field() -> None:
     parsed = parse_file(TEMPLATE)
     assert parsed.answers == {}
     assert len(parsed.field_errors) == 12
-    assert all("still says TODO" in why for why in parsed.field_errors.values())
+    for name, why in parsed.field_errors.items():
+        expected = (
+            "details hidden: contact data" if name == "contact_details" else "still says TODO"
+        )
+        assert expected in why, name
     assert parsed.problems == ['"document" still says TODO: write the source file name']
 
 

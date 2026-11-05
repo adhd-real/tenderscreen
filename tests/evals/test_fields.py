@@ -3,7 +3,14 @@ from decimal import Decimal
 
 import pytest
 
-from tenderscreen.evals.fields import FieldKind, comparable, field_kind, normalise_text
+from tenderscreen.evals.fields import (
+    FieldKind,
+    _is_int,
+    comparable,
+    field_kind,
+    is_private_field,
+    normalise_text,
+)
 from tenderscreen.ist import IST
 
 
@@ -82,3 +89,39 @@ def test_comparable_rejects_invalid_values(kind: FieldKind, value: object, messa
 
 def test_money_written_two_ways_compares_equal() -> None:
     assert comparable(FieldKind.MONEY, "₹ 2,50,00,000") == comparable(FieldKind.MONEY, "2.5 Cr")
+
+
+# Found in review.
+
+
+@pytest.mark.parametrize(
+    ("name", "private"),
+    [
+        ("contact_details", True),
+        ("contact_phone", True),
+        ("Officer_Mobile", True),
+        ("email", True),
+        ("e_mail_id", True),
+        ("office_address", True),
+        ("successful_bidder_name", False),
+        ("award_date", False),
+        ("emd_paise", False),
+    ],
+)
+def test_is_private_field(name: str, private: bool) -> None:
+    assert is_private_field(name) is private
+
+
+def test_invisible_characters_do_not_change_text() -> None:
+    zero_width = "".join(chr(c) for c in (0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD))
+    assert normalise_text(f"Synthetic{zero_width} Builders") == "synthetic builders"
+    assert normalise_text("Con\N{SOFT HYPHEN}struction") == "construction"
+    assert comparable(FieldKind.TEXT, "Ex\N{ZERO WIDTH SPACE}ample") == "example"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0, True), (-3, True), (True, False), (False, False), (2.0, False), ("4", False)],
+)
+def test_is_int_excludes_bools(value: object, expected: bool) -> None:
+    assert _is_int(value) is expected

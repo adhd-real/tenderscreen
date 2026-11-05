@@ -13,11 +13,12 @@ Money may be written as integer paise (2500000) or as text parse_inr accepts
 Floating-point numbers are refused for money (CLAUDE.md rule 1).
 """
 
+import re
 import unicodedata
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
-from typing import TypeGuard
+from typing import Final, TypeGuard
 
 from tenderscreen.parsing import parse_date, parse_inr
 
@@ -46,9 +47,23 @@ def field_kind(name: str) -> FieldKind:
     return FieldKind.TEXT
 
 
+# Fields whose values may hold personal contact data: reports and error
+# messages never show them (CLAUDE.md: never log phone numbers).
+_PRIVATE_FIELD: Final = re.compile(r"contact|phone|mobile|email|e_mail|address", re.IGNORECASE)
+# Zero-width space, non-joiner, joiner, word joiner, byte-order mark, soft hyphen:
+# invisible in a PDF viewer, so two names that look identical must compare equal.
+_INVISIBLE: Final = dict.fromkeys((0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD))
+
+
+def is_private_field(name: str) -> bool:
+    """True for fields that may hold names, phone numbers, emails or addresses."""
+    return _PRIVATE_FIELD.search(name) is not None
+
+
 def normalise_text(text: str) -> str:
-    """Canonical Unicode, runs of whitespace as one space, case folded."""
-    return " ".join(unicodedata.normalize("NFC", text).split()).casefold()
+    """Canonical Unicode, invisible characters dropped, whitespace collapsed, case folded."""
+    visible = unicodedata.normalize("NFC", text).translate(_INVISIBLE)
+    return " ".join(visible.split()).casefold()
 
 
 def _is_int(value: object) -> TypeGuard[int]:
