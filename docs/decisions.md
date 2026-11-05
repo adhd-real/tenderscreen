@@ -370,3 +370,48 @@ and "₹ 5000²" (a footnote mark) became ₹50,002. So the accepted shape is no
   an unfinished label can never silently count as `not_found`.
 - A prediction file that is not readable JSON makes every field of that
   document `invalid`, with the JSON error as the reason.
+
+## Task F: Data check kit
+
+### records.csv
+
+- Columns: `file` (added: links a row to a file in data/manual/, relative path),
+  the requested ones (`portal`, `url`, `date_found`, `notice_type`,
+  `captcha_needed`, `robots_txt_notes`, `language`, `file_format`,
+  `text_layer_or_scanned`, `page_count`, seven `has_...` columns), and `notes`.
+  `has_pbg_percentage_or_deadline` is one column, as the task lists "PBG
+  percentage or deadline" as one field. `y`/`n` values; the summary also
+  accepts yes/no/1/0/हाँ/नहीं.
+- The kit writes only blank cells of four columns (`file_format`,
+  `text_layer_or_scanned`, `page_count`, `language`) and the `file` cell of rows
+  it adds. It never reorders or drops rows, keeps extra columns, keeps the BOM
+  and line endings (Excel's "CSV UTF-8" writes both), and leaves the file
+  untouched when nothing changed (so quoting style is not rewritten).
+- A malformed CSV (repeated or blank header names, missing `file` column, a row
+  with more cells than the header, not UTF-8) stops the kit with the line number,
+  and nothing is written: guessing could lose typed data.
+
+### What the kit fills
+
+- `file_format` from the bytes; for PDFs `text_layer_or_scanned` is `text layer`,
+  `scanned` or `mixed` using Task C's text-layer rule, and `page_count`.
+  HTML is `text (html)`, images `scanned (image)`.
+- `language` from the share of Devanagari vs Latin letters: >= 80% Devanagari
+  "hindi", <= 20% "english", otherwise "hindi+english"; "other script" when most
+  letters are neither (Gurmukhi on Punjab documents); blank under 20 letters.
+  Scanned PDFs are OCR'd for this through the Task D cache (`--no-ocr` skips it
+  and leaves the language blank). Images are not OCR'd: their language is left
+  for a person.
+- Problems (unreadable files, rows naming missing files, language not checked)
+  go to the summary, not into the CSV.
+- A missing `records.csv` is created from the template. A file whose four kit
+  cells are all filled is not opened again (re-runs stay quick). A `records.csv`
+  that is not UTF-8 (Excel's plain "CSV" on Windows) stops the kit with a
+  message to save it as "CSV UTF-8".
+- The OCR fixtures (`tesseract`, `devanagari_font`) moved from
+  `tests/documents/conftest.py` to the root `tests/conftest.py`, since the kit's
+  tests need them too.
+- The summary is written to `data/manual/records-summary.md` (the kit skips it,
+  `records.csv` and `README.md` when listing documents). Writing these two files
+  into data/manual/ was asked for; the uploaded documents themselves are only
+  ever read (CLAUDE.md layout rule).

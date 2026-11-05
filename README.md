@@ -27,4 +27,15 @@ ruff check . && ruff format --check . && mypy && pytest && pip-audit --skip-edit
   && python -m tenderscreen.devtools.licence_check
 ```
 
+## Tools
+
+```bash
+python -m tenderscreen.datacheck                       # pre-fill and summarise data/manual/records.csv
+python -m tenderscreen.evals data/labels data/predictions  # score extraction against hand labels
+```
+
+Guides: [docs/data-check.md](docs/data-check.md) (manual portal research) and
+[docs/labelling.md](docs/labelling.md) (labelling a document). Decisions made
+while building are in [docs/decisions.md](docs/decisions.md).
+
 Project rules for contributors and for Claude live in [CLAUDE.md](CLAUDE.md).

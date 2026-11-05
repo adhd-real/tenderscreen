@@ -1,4 +1,4 @@
-"""Fixtures for document tests.
+"""Fixtures shared by every test package.
 
 OCR tests need Tesseract with English and Hindi. Locally they are skipped, with
 the reason, when it is missing. CI sets TENDERSCREEN_REQUIRE_OCR=1, which turns

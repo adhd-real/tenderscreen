@@ -11,13 +11,13 @@ Re-read this file before starting each task.
 - [x] TASK C: PDF text extraction and OCR
 - [x] TASK D: Document store with dedupe and caching
 - [x] TASK E: Evaluation harness
-- [ ] TASK F: Data check kit for manual research
+- [x] TASK F: Data check kit for manual research
 - [ ] FINAL STEP: Morning report, push, pull request
 
 ## Working notes (for resuming after a restart or compaction)
 
 - Branch `claude/bold-maxwell-8t0jxb`, built on the scaffold branch (see
-  docs/decisions.md). A to E are committed and pushed.
+  docs/decisions.md). A to F are committed and pushed; reviews of D, E, F were still running at commit time (stop hook), so review fixes follow as separate commits.
 - Commit one task at a time: stage only that task's files, then
   `git stash push --keep-index --include-untracked` to run every check on the
   staged state alone, commit, push, `git stash pop`. Do not edit already-staged
