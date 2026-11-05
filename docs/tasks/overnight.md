@@ -17,15 +17,11 @@ Re-read this file before starting each task.
 ## Working notes (for resuming after a restart or compaction)
 
 - Branch `claude/bold-maxwell-8t0jxb`, built on the scaffold branch (see
-  docs/decisions.md). A to F are committed and pushed; reviews of D, E, F were still running at commit time (stop hook), so review fixes follow as separate commits.
-- Commit one task at a time: stage only that task's files, then
-  `git stash push --keep-index --include-untracked` to run every check on the
-  staged state alone, commit, push, `git stash pop`. Do not edit already-staged
-  shared files (pyproject.toml, CLAUDE.md, docs/decisions.md) while later work is
-  in progress, or the pop conflicts.
-- Decision notes for D, E, F are drafted in the session scratchpad
-  (decisions_D.md, decisions_E.md, decisions_F.md); append each to
-  docs/decisions.md when committing that task.
+  docs/decisions.md). A to F are committed and pushed, each followed by the
+  fixes its fresh-context review found (C was reviewed twice); a sandbox race
+  found by CI is fixed too.
+- The morning report is docs/overnight-report.md; every unattended decision is
+  in docs/decisions.md.
 
 ## Original prompt (verbatim)
 
