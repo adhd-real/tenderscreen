@@ -6,13 +6,10 @@ passed to the ``tesseract`` command-line program. Tesseract runs single-threaded
 and it gets a minimal environment: it needs nothing secret.
 """
 
-import ctypes
 import math
 import os
 import shutil
-import signal
 import subprocess
-import sys
 import time
 from dataclasses import asdict, dataclass
 from functools import partial
@@ -22,12 +19,10 @@ from typing import Final
 import pypdfium2 as pdfium
 
 from tenderscreen.documents.errors import OcrUnavailableError
-from tenderscreen.documents.sandbox import Json
+from tenderscreen.documents.sandbox import Json, die_with_parent
 
 POINTS_PER_INCH: Final = 72
 _VERSION_TIMEOUT_S: Final = 30
-_PR_SET_PDEATHSIG: Final = 1  # from <linux/prctl.h>
-_LIBC: Final = ctypes.CDLL(None, use_errno=True) if sys.platform == "linux" else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,20 +85,6 @@ def _tesseract_env() -> dict[str, str]:
     if "TESSDATA_PREFIX" in os.environ:
         env["TESSDATA_PREFIX"] = os.environ["TESSDATA_PREFIX"]
     return env
-
-
-def _die_with_parent(parent_pid: int) -> None:
-    """Run in the Tesseract child before exec: be killed if the worker dies.
-
-    When a worker is killed (a page overran its time limit), its Tesseract would
-    otherwise keep running. Linux only; elsewhere the worker's own subprocess
-    timeout still applies. If the worker already died before this took effect,
-    exit at once.
-    """
-    if _LIBC is not None:
-        _LIBC.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
-    if os.getppid() != parent_pid:
-        os._exit(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,7 +212,7 @@ def ocr_page(task: OcrTask) -> OcrOutcome:
             timeout=remaining,
             env=_tesseract_env(),
             # Safe here: the worker process runs a single thread.
-            preexec_fn=partial(_die_with_parent, pid),
+            preexec_fn=partial(die_with_parent, pid),
         )
     except subprocess.TimeoutExpired:
         return OcrOutcome(task.page_index, timed_out=True, worker_pid=pid)

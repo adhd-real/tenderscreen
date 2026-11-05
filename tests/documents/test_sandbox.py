@@ -1,6 +1,8 @@
 import json
 import multiprocessing
 import os
+import signal
+import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -19,6 +21,7 @@ from tenderscreen.documents.sandbox import (
     ChildProtocolError,
     ChildStartError,
     ChildTimeoutError,
+    DeadlineError,
     Json,
     TaskFailedError,
     TaskTimeoutError,
@@ -34,10 +37,12 @@ from tests.documents.worker_tasks import (
     die_soon,
     fail,
     oversized,
+    report_environment,
     segfault,
     silent,
     sleep_and_record,
     square,
+    stall_mid_message,
     unserializable,
 )
 
@@ -68,10 +73,9 @@ def test_no_tasks_starts_no_process() -> None:
     assert run(square, []) == []
 
 
-@pytest.mark.parametrize(("workers", "timeout_s"), [(0, 1.0), (1, 0.0)])
-def test_invalid_arguments(workers: int, timeout_s: float) -> None:
+def test_invalid_worker_count() -> None:
     with pytest.raises(ValueError, match="workers must be at least 1"):
-        run(square, [1], workers=workers, timeout_s=timeout_s)
+        run(square, [1], workers=0)
 
 
 def test_tasks_run_in_parallel_worker_processes() -> None:
@@ -245,9 +249,17 @@ def test_task_loop_stops_at_end_of_input() -> None:
     task_loop(child, square)  # returns instead of waiting forever
 
 
-def test_child_main_sends_ready_then_runs_target() -> None:
+def test_child_main_sets_limits_then_sends_ready_then_runs_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+    # In this process these would cap pytest itself, so record instead of running them.
+    monkeypatch.setattr(sandbox, "die_with_parent", lambda pid: calls.append(("parent", pid)))
+    monkeypatch.setattr(sandbox, "scrub_environment", lambda: calls.append("scrub"))
+    monkeypatch.setattr(sandbox, "limit_memory", lambda limit: calls.append(("memory", limit)))
     parent, child = pipe()
-    sandbox._child_main(child, send_hello, ("hello",), None)
+    sandbox._child_main(child, send_hello, ("hello",), 123, 456)
+    assert calls == [("parent", 456), "scrub", ("memory", 123)]
     assert json.loads(parent.recv_bytes()) == ["ready", os.getpid()]
     assert json.loads(parent.recv_bytes()) == ["said", "hello"]
 
@@ -261,7 +273,7 @@ def test_receive_ready_rejects_non_json(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(child.conn, "poll", lambda: True)
     monkeypatch.setattr(child.conn, "recv_bytes", lambda limit: b"\xff not json")
     with pytest.raises(ChildProtocolError, match="not UTF-8 JSON"):
-        child.receive_ready()
+        child.receive_ready(1.0)
     monkeypatch.undo()
     child.stop()
 
@@ -355,5 +367,263 @@ class DeadChild:
 
 def test_sending_a_task_to_a_dead_idle_child_fails_that_task() -> None:
     with pytest.raises(TaskFailedError, match="killed by SIGKILL") as caught:
-        sandbox._schedule([cast(Child, DeadChild())], [7], identity, 60.0, None)
+        sandbox._schedule([cast(Child, DeadChild())], [7], identity, 60.0, None, None)
     assert caught.value.index == 0
+
+
+# Found in the second review of the sandbox.
+
+
+def test_half_sent_message_cannot_hang_the_parent() -> None:
+    """A child that sends a message header and then stalls is cut off by the watchdog."""
+    child = start_child(stall_mid_message, (), None)
+    started = time.monotonic()
+    with pytest.raises(ChildTimeoutError):
+        child.receive(1.0)
+    assert time.monotonic() - started < 10
+    child.stop()
+
+
+def test_overall_deadline_stops_the_run() -> None:
+    started = time.monotonic()
+    with pytest.raises(DeadlineError):
+        run(sleep_and_record, [30.0, 30.0], deadline=time.monotonic() + 1.0)
+    assert time.monotonic() - started < 10
+
+
+def test_finished_tasks_are_not_cut_by_the_deadline() -> None:
+    assert run(square, [2, 3], deadline=time.monotonic() + 60) == [4, 9]
+
+
+def test_failure_kills_busy_workers_at_once() -> None:
+    """Found in review: each busy worker used to get its own 0.5 s grace, in turn."""
+
+    def reject(index: int, value: Json) -> None:
+        raise RuntimeError("stop")
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="stop"):
+        run(sleep_and_record, [0.0, 30.0, 30.0, 30.0], workers=4, on_result=reject)
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), 0.0, -1.0])
+def test_timeouts_must_be_finite_and_positive(bad: float) -> None:
+    with pytest.raises(ValueError, match="positive, finite"):
+        run(square, [1], timeout_s=bad)
+
+
+def test_deadline_must_be_finite() -> None:
+    with pytest.raises(ValueError, match="deadline must be finite"):
+        run(square, [1], deadline=float("nan"))
+
+
+def test_deeply_nested_answer_is_a_protocol_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    child = start_child(silent, (), None)
+    monkeypatch.setattr(child.conn, "poll", lambda: True)
+    monkeypatch.setattr(child.conn, "recv_bytes", lambda limit: b"[" * 200_000)
+    with pytest.raises(ChildProtocolError, match="nested too deeply"):
+        child.receive_ready(1.0)
+    monkeypatch.undo()
+    child.stop()
+
+
+def test_cut_off_message_from_a_dead_child_is_a_death_not_a_size_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child = start_child(silent, (), None)
+    child.process.kill()
+    child.process.join()
+
+    def cut_off(limit: int) -> bytes:
+        raise OSError("bad message length")
+
+    monkeypatch.setattr(child.conn, "poll", lambda: True)
+    monkeypatch.setattr(child.conn, "recv_bytes", cut_off)
+    with pytest.raises(ChildDiedError, match="SIGKILL"):
+        child.receive_ready(1.0)
+    monkeypatch.undo()
+    child.stop()
+
+
+def test_process_that_cannot_start_is_a_start_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_more_processes(self: object) -> None:
+        raise OSError("Resource temporarily unavailable")
+
+    monkeypatch.setattr("multiprocessing.context.SpawnProcess.start", no_more_processes)
+    with pytest.raises(ChildStartError, match="could not be started"):
+        start_child(silent, (), None)
+
+
+def test_children_see_only_allowlisted_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TENDERSCREEN_FAKE_SECRET", "not-for-workers")
+    child = start_child(report_environment, (), None)
+    names = child.receive(30.0)
+    child.stop()
+    assert isinstance(names, list)
+    assert "TENDERSCREEN_FAKE_SECRET" not in names
+    assert set(cast(list[str], names)) <= sandbox.ENVIRONMENT_ALLOWLIST
+
+
+def test_scrub_environment_keeps_only_the_allowlist() -> None:
+    environ = {"PATH": "/bin", "LANG": "C.UTF-8", "WHATSAPP_TOKEN": "x", "HOME": "/root"}
+    sandbox.scrub_environment(environ)
+    assert environ == {"PATH": "/bin", "LANG": "C.UTF-8"}
+
+
+class RecordingLibc:
+    """Stands in for libc: records prctl calls instead of making them."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int]] = []
+
+    def prctl(self, option: int, value: int) -> int:
+        self.calls.append((option, value))
+        return 0
+
+
+def test_die_with_parent_sets_parent_death_signal(monkeypatch: pytest.MonkeyPatch) -> None:
+    libc = RecordingLibc()
+    monkeypatch.setattr(sandbox, "_LIBC", libc)
+    sandbox.die_with_parent(os.getppid())
+    assert libc.calls == [(1, signal.SIGKILL)]  # PR_SET_PDEATHSIG
+
+
+def test_die_with_parent_exits_if_the_parent_is_already_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exits: list[int] = []
+    monkeypatch.setattr(sandbox, "_LIBC", None)  # the no-op used outside Linux
+    monkeypatch.setattr("tenderscreen.documents.sandbox.os._exit", exits.append)
+    sandbox.die_with_parent(os.getppid() + 1_000_000)
+    assert exits == [1]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="parent-death signal is Linux-only")
+def test_workers_die_with_their_parent(tmp_path: Path) -> None:
+    """Found in review: killing the parent with SIGKILL used to orphan its workers."""
+    script = tmp_path / "parent.py"
+    script.write_text(
+        "import sys, time\n"
+        f"sys.path[:0] = {sys.path!r}\n"
+        "from tenderscreen.documents.sandbox import start_child\n"
+        "from tests.documents.worker_tasks import silent\n"
+        "if __name__ == '__main__':\n"
+        "    child = start_child(silent, (), None)\n"
+        "    print(child.process.pid, flush=True)\n"
+        "    time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    parent = subprocess.Popen(  # noqa: S603 - our own script
+        [sys.executable, str(script)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert parent.stdout is not None
+        child_pid = int(parent.stdout.readline())
+        parent.kill()
+        parent.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while process_alive(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not process_alive(child_pid), "the worker outlived its killed parent"
+    finally:
+        parent.kill()
+
+
+def process_alive(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def test_clip_shortens_long_details() -> None:
+    assert sandbox.clip("short") == "short"
+    clipped = sandbox.clip("x" * 1000)
+    assert len(clipped) == sandbox.MAX_DETAIL_CHARS
+    assert clipped.endswith("...")
+
+
+def test_ready_sentinel_without_data_is_a_death(monkeypatch: pytest.MonkeyPatch) -> None:
+    child = start_child(silent, (), None)
+    child.process.kill()
+    child.process.join()
+    monkeypatch.setattr(child.conn, "poll", lambda: False)
+    with pytest.raises(ChildDiedError, match="SIGKILL"):
+        child.receive_ready(1.0)
+    monkeypatch.undo()
+    child.stop()
+
+
+class BrokenProcess:
+    """A process handle whose checks fail, as during interpreter shutdown."""
+
+    def is_alive(self) -> bool:
+        raise RuntimeError("cannot check")
+
+    def close(self) -> None:
+        pass
+
+
+class RecordingConn:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeChild:
+    def __init__(self, process: object) -> None:
+        self.process = process
+        self.conn = RecordingConn()
+
+
+class FinishedProcess:
+    def is_alive(self) -> bool:
+        return False
+
+    def close(self) -> None:
+        pass
+
+
+def test_stopping_continues_after_one_child_fails_and_reraises() -> None:
+    broken = FakeChild(BrokenProcess())
+    healthy = FakeChild(FinishedProcess())
+    with pytest.raises(RuntimeError, match="cannot check"):
+        sandbox.stop_children([cast(Child, broken), cast(Child, healthy)], graceful=False)
+    assert broken.conn.closed
+    assert healthy.conn.closed
+
+
+class StallingChild:
+    """Its pipe looks readable, but reading the answer times out (watchdog fired)."""
+
+    def __init__(self) -> None:
+        self.conn, self._writer = multiprocessing.Pipe(duplex=True)
+        self._writer.send_bytes(b"[")  # makes conn readable
+        self._idle_read, self._idle_write = os.pipe()
+        self.sentinel = self._idle_read
+
+    def send(self, message: object) -> None:
+        pass
+
+    def receive_ready(self, timeout: float) -> Json:
+        raise ChildTimeoutError
+
+    def close(self) -> None:
+        self.conn.close()
+        self._writer.close()
+        os.close(self._idle_read)
+        os.close(self._idle_write)
+
+
+def test_answer_cut_off_by_the_watchdog_is_a_task_timeout() -> None:
+    child = StallingChild()
+    try:
+        with pytest.raises(TaskTimeoutError) as caught:
+            sandbox._schedule([cast(Child, child)], [1], identity, 60.0, None, None)
+        assert caught.value.index == 0
+    finally:
+        child.close()

@@ -1,5 +1,4 @@
 import os
-import signal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -181,34 +180,6 @@ def test_ocr_page_reads_hindi(tmp_path: Path, tesseract: Tesseract, devanagari_f
     assert outcome.error is None
     for line in HINDI_NOTICE:
         assert line in outcome.text
-
-
-class RecordingLibc:
-    """Stands in for libc: records prctl calls instead of making them."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[int, int]] = []
-
-    def prctl(self, option: int, value: int) -> int:
-        self.calls.append((option, value))
-        return 0
-
-
-def test_die_with_parent_sets_parent_death_signal(monkeypatch: pytest.MonkeyPatch) -> None:
-    libc = RecordingLibc()
-    monkeypatch.setattr("tenderscreen.documents.ocr._LIBC", libc)
-    ocr._die_with_parent(os.getppid())
-    assert libc.calls == [(1, signal.SIGKILL)]  # PR_SET_PDEATHSIG
-
-
-def test_die_with_parent_exits_if_the_worker_is_already_gone(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    exits: list[int] = []
-    monkeypatch.setattr("tenderscreen.documents.ocr._LIBC", None)  # no-op outside Linux
-    monkeypatch.setattr("tenderscreen.documents.ocr.os._exit", exits.append)
-    ocr._die_with_parent(os.getppid() + 1_000_000)
-    assert exits == [1]
 
 
 def test_find_tesseract_caches_only_successes(tmp_path: Path) -> None:

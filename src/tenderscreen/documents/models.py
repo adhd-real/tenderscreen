@@ -1,5 +1,6 @@
 """Settings and results for page text extraction."""
 
+import math
 import os
 import unicodedata
 from dataclasses import dataclass
@@ -43,11 +44,20 @@ class ExtractionLimits:
     # Address-space cap for each worker process that parses or OCRs a document
     # (Linux only). Normal pages need well under 300 MB; a "PDF bomb" hits this.
     max_memory_bytes: int = 1024 * 1024 * 1024
+    # The whole document, all pages and stages together. Without it, a crafted
+    # 1,000-page file could spend just under 60 s on every page (over 16 hours).
+    max_document_s: float = 1800.0
 
     def __post_init__(self) -> None:
-        values = (self.max_file_bytes, self.max_pages, self.page_timeout_s, self.max_memory_bytes)
-        if any(value <= 0 for value in values):
-            raise ValueError("ExtractionLimits values must all be positive")
+        values = (
+            self.max_file_bytes,
+            self.max_pages,
+            self.page_timeout_s,
+            self.max_memory_bytes,
+            self.max_document_s,
+        )
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            raise ValueError("ExtractionLimits values must all be positive and finite")
 
 
 @dataclass(frozen=True, slots=True)

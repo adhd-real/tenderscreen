@@ -15,12 +15,18 @@ a script that calls this must keep its top-level code under
 
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Final
 
 import pypdfium2.version
 
-from tenderscreen.documents.errors import OcrFailedError, PageTimeoutError, WorkerStartError
+from tenderscreen.documents.errors import (
+    DocumentTimeoutError,
+    OcrFailedError,
+    PageTimeoutError,
+    WorkerStartError,
+)
 from tenderscreen.documents.models import (
     ExtractionLimits,
     ExtractionMethod,
@@ -38,8 +44,10 @@ from tenderscreen.documents.ocr import (
 )
 from tenderscreen.documents.sandbox import (
     ChildStartError,
+    DeadlineError,
     TaskFailedError,
     TaskTimeoutError,
+    clip,
     run_tasks,
 )
 from tenderscreen.documents.serialization import decode_pages, encode_pages
@@ -102,8 +110,9 @@ def extract_pages(
     PDF, password-protected, crashed the reader or exceeded the memory cap),
     ``PageTimeoutError`` (a page over the time limit), ``OcrUnavailableError``
     (OCR needed but Tesseract or a language missing) and ``OcrFailedError``.
-    ``FileNotFoundError`` if the path does not exist. The first failing page
-    stops the whole document.
+    ``DocumentTimeoutError`` (the whole document over ``max_document_s``),
+    ``WorkerStartError``, and ``FileNotFoundError`` if the path does not exist.
+    The first failing page stops the whole document.
 
     With a ``cache`` (see ``tenderscreen.store``), results are stored under the
     file's sha256 and ``step_version(settings)``: the same document is never
@@ -127,9 +136,10 @@ def extract_pages(
 
 def _extract(path: Path, limits: ExtractionLimits, settings: ExtractionSettings) -> list[PageText]:
     """The uncached work of ``extract_pages``."""
-    layers = read_text_layers(path, limits)
+    deadline = time.monotonic() + limits.max_document_s
+    layers = read_text_layers(path, limits, deadline=deadline)
     to_ocr = [page for page in layers if not has_usable_text_layer(page, settings)]
-    outcomes = _ocr_pages(path, to_ocr, limits, settings) if to_ocr else {}
+    outcomes = _ocr_pages(path, to_ocr, limits, settings, deadline) if to_ocr else {}
 
     pages = []
     for layer in layers:
@@ -143,13 +153,21 @@ def _extract(path: Path, limits: ExtractionLimits, settings: ExtractionSettings)
     return pages
 
 
-def _check_outcome(name: str, outcome: OcrOutcome, timeout_s: float) -> None:
-    """Raise for a failed page as soon as its answer arrives (stops every worker)."""
-    page_number = outcome.page_index + 1
+def _check_outcome(name: str, task: OcrTask, outcome: OcrOutcome, timeout_s: float) -> None:
+    """Raise for a failed page as soon as its answer arrives (stops every worker).
+
+    The page is the one the parent asked for, never the one the worker claims:
+    a worker parses untrusted data, and a wrong page would mean a wrong
+    ``source_page`` citation later (CLAUDE.md rule 3).
+    """
+    page_number = task.page_index + 1
+    if outcome.page_index != task.page_index:
+        detail = f"the worker answered for page {outcome.page_index + 1} instead"
+        raise OcrFailedError(name, page_number, detail)
     if outcome.timed_out:
         raise PageTimeoutError(name, page_number, timeout_s, OCR_STAGE)
     if outcome.error is not None:
-        raise OcrFailedError(name, page_number, outcome.error)
+        raise OcrFailedError(name, page_number, clip(outcome.error))
 
 
 def _ocr_pages(
@@ -157,6 +175,7 @@ def _ocr_pages(
     pages: list[TextLayerPage],
     limits: ExtractionLimits,
     settings: ExtractionSettings,
+    deadline: float,
 ) -> dict[int, OcrOutcome]:
     """OCR outcomes keyed by 1-based page number; raises on the first failed page."""
     tesseract = require_tesseract(settings.languages, settings.tesseract_binary)
@@ -186,9 +205,10 @@ def _ocr_pages(
                 workers=settings.worker_count(len(tasks)),
                 timeout_s=limits.page_timeout_s + WORKER_GRACE_S,
                 memory_limit=limits.max_memory_bytes,
-                on_result=lambda _, outcome: _check_outcome(
-                    path.name, outcome, limits.page_timeout_s
+                on_result=lambda index, outcome: _check_outcome(
+                    path.name, tasks[index], outcome, limits.page_timeout_s
                 ),
+                deadline=deadline,
             )
         except TaskTimeoutError as exc:
             page_number = tasks[exc.index].page_index + 1
@@ -199,6 +219,8 @@ def _ocr_pages(
             raise OcrFailedError(path.name, tasks[exc.index].page_index + 1, exc.detail) from exc
         except ChildStartError as exc:
             raise WorkerStartError(str(exc)) from exc
-        return {outcome.page_index + 1: outcome for outcome in outcomes}
+        except DeadlineError as exc:
+            raise DocumentTimeoutError(path.name, limits.max_document_s) from exc
+        return {task.page_index + 1: outcome for task, outcome in zip(tasks, outcomes, strict=True)}
     finally:
         shutil.rmtree(work_root, ignore_errors=True)

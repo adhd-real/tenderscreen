@@ -34,6 +34,14 @@ class PageTimeoutError(DocumentError):
         )
 
 
+class DocumentTimeoutError(DocumentError):
+    def __init__(self, name: str, timeout_s: float) -> None:
+        super().__init__(
+            f"{name}: the whole document took longer than {timeout_s:g} s "
+            "(ExtractionLimits.max_document_s)"
+        )
+
+
 class CorruptDocumentError(DocumentError):
     def __init__(self, name: str, reason: str) -> None:
         super().__init__(f"{name} is not a readable PDF: {reason}")

@@ -241,6 +241,42 @@ and "₹ 5000²" (a footnote mark) became ₹50,002. So the accepted shape is no
   memory-exhausting files raise `CorruptDocumentError`; a missing file raises
   `FileNotFoundError`; a worker that cannot start raises `WorkerStartError`.
 
+### Second review of the sandbox (fixed in a follow-up commit)
+
+A second fresh-context review of the rewritten sandbox found, and these are now
+fixed and tested:
+
+- **A half-sent message could hang the parent forever** (the deadline covered
+  only the wait for the first byte). Every read now has a watchdog that kills
+  the child if the message does not finish arriving in time.
+- **OCR text could be put on the wrong page**: the parent trusted the page
+  number the worker reported. Results are now paired with the task the parent
+  sent, and an answer naming another page is rejected. A wrong page would have
+  meant wrong `source_page` citations (CLAUDE.md rule 3).
+- **Workers outlived a killed parent.** Every child now has the parent-death
+  signal, as Tesseract already did.
+- **No limit for the whole document.** `ExtractionLimits.max_document_s`
+  (default 30 minutes) now bounds all pages and stages together
+  (`DocumentTimeoutError`); without it a crafted 1,000-page file could take
+  over 16 hours at just under 60 s per page.
+- **Stopping workers after a failure** gave each busy worker 0.5 s in turn;
+  busy workers are now killed at once, and one worker failing to stop no
+  longer leaves the others running.
+- **Children inherited the full environment.** They now drop every variable
+  except PATH, temp-folder, locale and TESSDATA_PREFIX. This keeps secrets away
+  from Python code and programs in the worker, but native code could still read
+  the process's original environment block: the sandbox limits resources, it
+  is not a privilege boundary (stated in `sandbox.py`). For full isolation, run
+  document processing in a process or container with no secrets.
+- Smaller: answers are capped at 4 MB (decoding costs about 20x in memory) and
+  deeply nested JSON is a protocol error; NaN or infinite limits are refused; a
+  child that dies mid-message is reported as a crash, naming the page; text from
+  children is shortened before it goes into error messages; the test-only
+  `open_pdf` was removed; failing to start a process is a `WorkerStartError`.
+- New tests: two-level nested forms (catching a wrong matrix order), a stalled
+  message, a forged page number, the whole-document limit, workers dying with a
+  SIGKILLed parent, the environment a worker sees, and stopping time.
+
 ### Image coverage in page coordinates (found in review)
 
 - Coverage was computed against (0, 0, width, height) and with Form XObject

@@ -22,7 +22,9 @@ from tenderscreen.documents import (
     WorkerStartError,
     extract_pages,
 )
-from tenderscreen.documents.ocr import Tesseract
+from tenderscreen.documents.errors import DocumentTimeoutError
+from tenderscreen.documents.extract import _check_outcome
+from tenderscreen.documents.ocr import OcrOutcome, OcrTask, Tesseract
 from tenderscreen.documents.sandbox import ChildStartError
 from tests.documents.fake_tesseract import write_fake_tesseract
 from tests.documents.pdf_factory import (
@@ -282,3 +284,37 @@ def test_pdf_bomb_fails_cleanly(tmp_path: Path) -> None:
     path = build_form_bomb(tmp_path / "bomb.pdf", depth=5)
     with pytest.raises(PageTimeoutError):
         extract_pages(path, limits=ExtractionLimits(page_timeout_s=0.05), settings=NO_OCR)
+
+
+# Found in the second review.
+
+
+def ocr_task(page_index: int) -> OcrTask:
+    return OcrTask(
+        "x.pdf", page_index, "/bin/tesseract", "eng+hin", 300, 50_000_000, 60.0, "work-dir-unused"
+    )
+
+
+def test_answer_for_another_page_is_rejected() -> None:
+    """A worker claiming another page must not move OCR text onto that page."""
+    forged = OcrOutcome(page_index=0, text="FORGED", confidence=99.0)
+    with pytest.raises(OcrFailedError, match=r"x\.pdf page 2: OCR failed: .*page 1 instead"):
+        _check_outcome("x.pdf", ocr_task(1), forged, 60.0)
+
+
+def test_check_outcome_accepts_the_right_page_and_reports_failures() -> None:
+    _check_outcome("x.pdf", ocr_task(1), OcrOutcome(page_index=1, text="ok"), 60.0)
+    with pytest.raises(PageTimeoutError, match="page 2"):
+        _check_outcome("x.pdf", ocr_task(1), OcrOutcome(page_index=1, timed_out=True), 60.0)
+    with pytest.raises(OcrFailedError, match="page 2: OCR failed: " + "x" * 10):
+        _check_outcome("x.pdf", ocr_task(1), OcrOutcome(page_index=1, error="x" * 5000), 60.0)
+
+
+def test_document_deadline_during_ocr(tmp_path: Path) -> None:
+    path = build_pdf(tmp_path / "slow.pdf", [ScannedPage(), ScannedPage()])
+    fake = write_fake_tesseract(tmp_path, "exec sleep 60")
+    limits = ExtractionLimits(page_timeout_s=30.0, max_document_s=3.0)
+    started = time.monotonic()
+    with pytest.raises(DocumentTimeoutError, match=r"slow\.pdf: the whole document took longer"):
+        extract_pages(path, limits=limits, settings=ExtractionSettings(tesseract_binary=str(fake)))
+    assert time.monotonic() - started < 20

@@ -24,6 +24,7 @@ def test_default_limits_match_the_spec() -> None:
     assert limits.max_pages == 1000
     assert limits.page_timeout_s == 60
     assert limits.max_memory_bytes == 1024 * 1024 * 1024
+    assert limits.max_document_s == 1800
 
 
 @pytest.mark.parametrize(
@@ -33,6 +34,9 @@ def test_default_limits_match_the_spec() -> None:
         lambda: ExtractionLimits(max_pages=-1),
         lambda: ExtractionLimits(page_timeout_s=0),
         lambda: ExtractionLimits(max_memory_bytes=0),
+        lambda: ExtractionLimits(max_document_s=0),
+        lambda: ExtractionLimits(page_timeout_s=float("nan")),
+        lambda: ExtractionLimits(max_document_s=float("inf")),
     ],
 )
 def test_limits_must_be_positive(make: Callable[[], ExtractionLimits]) -> None:

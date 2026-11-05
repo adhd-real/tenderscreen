@@ -2,10 +2,12 @@
 
 import ctypes
 import os
+import struct
 import threading
 import time
+from multiprocessing.connection import Connection
 
-from tenderscreen.documents.sandbox import MAX_MESSAGE_BYTES, Json
+from tenderscreen.documents.sandbox import MAX_MESSAGE_BYTES, Json, send_json
 
 
 def square(value: int) -> Json:
@@ -57,3 +59,15 @@ def oversized(value: int) -> Json:
 def silent(conn: object) -> None:
     """A child target that never answers."""
     time.sleep(60)
+
+
+def stall_mid_message(conn: Connection) -> None:
+    """A child target that starts a 100-byte message, sends 10 bytes, and stalls."""
+    os.write(conn.fileno(), struct.pack("!i", 100) + b"0123456789")
+    time.sleep(60)
+
+
+def report_environment(conn: Connection) -> None:
+    """A child target that reports which environment variables it can see."""
+    names: list[Json] = [*sorted(os.environ)]
+    send_json(conn, names)

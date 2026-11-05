@@ -1,18 +1,17 @@
 """Read each PDF page's embedded text layer with PDFium (pypdfium2), without OCR.
 
 Parsing happens in a sandboxed child process (see ``sandbox.py``): a memory cap,
-and a deadline for opening the file and for every page, enforced by the parent,
-which kills the child if it overruns. A malicious PDF (a "PDF bomb" of nested
-forms, a parser crash) can therefore only fail cleanly, never hang or crash the
-caller.
+and deadlines for opening the file, for every page and for the whole document,
+enforced by the parent, which kills the child if it overruns. A malicious PDF
+(a "PDF bomb" of nested forms, a parser crash) can therefore only fail cleanly,
+never hang or crash the caller.
 
 Also measures how much of each page is covered by images, so a scanned page that
 carries a small text overlay (a digital-signature stamp, a scanner watermark) is
 still recognised as a scan.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
+import time
 from dataclasses import asdict, dataclass
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -23,6 +22,7 @@ import pypdfium2.raw as pdfium_c
 
 from tenderscreen.documents.errors import (
     CorruptDocumentError,
+    DocumentTimeoutError,
     FileTooLargeError,
     PageTimeoutError,
     TooManyPagesError,
@@ -36,6 +36,7 @@ from tenderscreen.documents.sandbox import (
     ChildStartError,
     ChildTimeoutError,
     Json,
+    clip,
     send_json,
     start_child,
 )
@@ -74,27 +75,6 @@ def check_file(path: Path, limits: ExtractionLimits) -> None:
         head = handle.read(HEADER_SEARCH_BYTES)
     if PDF_MAGIC not in head:
         raise CorruptDocumentError(path.name, "no %PDF- header in the first 1 KB")
-
-
-@contextmanager
-def open_pdf(path: Path, limits: ExtractionLimits) -> Iterator[pdfium.PdfDocument]:
-    """Open a checked PDF in *this* process, enforce the page limit, and always close it.
-
-    Only for code already running in a sandboxed child (or tests): parsing an
-    untrusted PDF in the main process has no time or memory bound.
-    """
-    check_file(path, limits)
-    try:
-        document = pdfium.PdfDocument(path)
-    except pdfium.PdfiumError as exc:
-        raise CorruptDocumentError(path.name, str(exc)) from exc
-    try:
-        pages = len(document)
-        if pages > limits.max_pages:
-            raise TooManyPagesError(path.name, pages, limits.max_pages)
-        yield document
-    finally:
-        document.close()
 
 
 def image_coverage(page: pdfium.PdfPage) -> float:
@@ -197,14 +177,21 @@ def _message(child: Child, timeout_s: float) -> tuple[str, Json]:
     return message[0], message[1]
 
 
-def read_text_layers(path: Path, limits: ExtractionLimits | None = None) -> list[TextLayerPage]:
+def read_text_layers(
+    path: Path, limits: ExtractionLimits | None = None, *, deadline: float | None = None
+) -> list[TextLayerPage]:
     """The text layer of every page, in order, parsed in a sandboxed child process.
 
-    Raises ``FileTooLargeError``, ``TooManyPagesError``, ``CorruptDocumentError``
-    (unreadable, crashed the reader, or needed more than the memory cap) and
-    ``PageTimeoutError`` (opening, or any one page, over the time limit).
+    ``deadline`` (a ``time.monotonic()`` value) bounds the whole document; by
+    default ``limits.max_document_s`` from now. Raises ``FileTooLargeError``,
+    ``TooManyPagesError``, ``CorruptDocumentError`` (unreadable, crashed the
+    reader, or needed more than the memory cap), ``PageTimeoutError`` (opening,
+    or any one page, over the time limit), ``DocumentTimeoutError`` and
+    ``WorkerStartError``.
     """
     limits = limits or ExtractionLimits()
+    if deadline is None:
+        deadline = time.monotonic() + limits.max_document_s
     check_file(path, limits)
     try:
         child = start_child(
@@ -214,10 +201,22 @@ def read_text_layers(path: Path, limits: ExtractionLimits | None = None) -> list
         raise WorkerStartError(str(exc)) from exc
     page_number: int | None = None
     stage = "opening the PDF"
+
+    def next_message() -> tuple[str, Json]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DocumentTimeoutError(path.name, limits.max_document_s)
+        try:
+            return _message(child, min(limits.page_timeout_s, remaining))
+        except ChildTimeoutError:
+            if limits.page_timeout_s < remaining:
+                raise
+            raise DocumentTimeoutError(path.name, limits.max_document_s) from None
+
     try:
-        kind, value = _message(child, limits.page_timeout_s)
+        kind, value = next_message()
         if kind == "error":
-            raise CorruptDocumentError(path.name, str(value))
+            raise CorruptDocumentError(path.name, clip(str(value)))
         if kind != "count" or type(value) is not int or value < 0:
             raise ChildProtocolError("unexpected page count from the PDF reader")
         if value > limits.max_pages:
@@ -225,9 +224,9 @@ def read_text_layers(path: Path, limits: ExtractionLimits | None = None) -> list
         pages = []
         stage = "reading the text layer"
         for page_number in range(1, value + 1):
-            kind, data = _message(child, limits.page_timeout_s)
+            kind, data = next_message()
             if kind == "error":
-                raise CorruptDocumentError(path.name, str(data))
+                raise CorruptDocumentError(path.name, clip(str(data)))
             if kind != "page":
                 raise ChildProtocolError("unexpected message from the PDF reader")
             pages.append(page_from_json(data, page_number))
@@ -235,10 +234,11 @@ def read_text_layers(path: Path, limits: ExtractionLimits | None = None) -> list
     except ChildTimeoutError:
         raise PageTimeoutError(path.name, page_number, limits.page_timeout_s, stage) from None
     except ChildDiedError as exc:
+        where = f"page {page_number}" if page_number is not None else "the file"
         raise CorruptDocumentError(
             path.name,
-            f"{exc} while {stage}; the file may be malformed, or need more memory than "
-            "ExtractionLimits.max_memory_bytes",
+            f"{exc} while {stage} ({where}); the file may be malformed, or need more memory "
+            "than ExtractionLimits.max_memory_bytes",
         ) from exc
     except (ChildProtocolError, ValueError) as exc:
         raise CorruptDocumentError(path.name, f"the PDF reader gave invalid output: {exc}") from exc

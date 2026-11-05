@@ -1,6 +1,7 @@
 import json
 import multiprocessing
 import sys
+import time
 from pathlib import Path
 from typing import cast
 
@@ -10,6 +11,7 @@ import pytest
 from tenderscreen.documents import textlayer
 from tenderscreen.documents.errors import (
     CorruptDocumentError,
+    DocumentTimeoutError,
     FileTooLargeError,
     PageTimeoutError,
     TooManyPagesError,
@@ -29,7 +31,6 @@ from tenderscreen.documents.textlayer import (
     clean_text,
     has_usable_text_layer,
     image_coverage,
-    open_pdf,
     page_from_json,
     read_text_layers,
     text_layer_child,
@@ -41,6 +42,7 @@ from tests.documents.pdf_factory import (
     TextPage,
     build_form_bomb,
     build_form_wrapped_scan,
+    build_nested_form_scan,
     build_offset_mediabox_scan,
     build_pdf,
     build_pdf_bytes,
@@ -87,25 +89,11 @@ def test_check_file_rejects_oversized_before_reading(tmp_path: Path) -> None:
         check_file(path, ExtractionLimits(max_file_bytes=100))
 
 
-def test_open_pdf_reports_pdfium_errors_as_corrupt(tmp_path: Path) -> None:
+def test_unreadable_pdf_is_reported_as_corrupt(tmp_path: Path) -> None:
     path = tmp_path / "garbage.pdf"
     path.write_bytes(b"%PDF-1.7\n" + bytes(range(256)) * 4)
-    with (
-        pytest.raises(CorruptDocumentError, match=r"garbage\.pdf is not a readable PDF"),
-        open_pdf(path, LIMITS),
-    ):
-        pass
-
-
-def test_open_pdf_enforces_page_limit_and_closes(tmp_path: Path) -> None:
-    path = build_pdf(tmp_path / "three.pdf", [BlankPage(), BlankPage(), BlankPage()])
-    with (
-        pytest.raises(TooManyPagesError, match=r"three\.pdf has 3 pages, over the limit of 2"),
-        open_pdf(path, ExtractionLimits(max_pages=2)),
-    ):
-        pass
-    with open_pdf(path, ExtractionLimits(max_pages=3)) as document:
-        assert len(document) == 3
+    with pytest.raises(CorruptDocumentError, match=r"garbage\.pdf is not a readable PDF"):
+        read_text_layers(path)
 
 
 def coverage_of(path: Path, index: int = 0) -> float:
@@ -133,6 +121,13 @@ def test_image_coverage_of_a_scan_inside_a_form_xobject(tmp_path: Path) -> None:
     """Found in review: form coordinates were taken as page coordinates."""
     path = build_form_wrapped_scan(tmp_path / "form.pdf")
     assert coverage_of(path) == pytest.approx(1.0, abs=0.01)
+
+
+def test_image_coverage_through_two_nested_forms(tmp_path: Path) -> None:
+    """Found in the second review: only one form level was tested, so the order in
+    which form matrices are combined was never checked (the wrong order gives 0)."""
+    path = build_nested_form_scan(tmp_path / "nested.pdf")
+    assert coverage_of(path) == pytest.approx(0.25, abs=0.01)
 
 
 class FlatPage:
@@ -301,7 +296,16 @@ class ScriptedChild:
         ([["count", 1], ["page", {}]], CorruptDocumentError, "wrong keys"),
         ([ChildTimeoutError()], PageTimeoutError, "doc.pdf: opening the PDF took longer"),
         ([["count", 1], ChildTimeoutError()], PageTimeoutError, "doc.pdf page 1: reading"),
-        ([ChildDiedError(-11)], CorruptDocumentError, "SIGSEGV while opening the PDF"),
+        (
+            [ChildDiedError(-11)],
+            CorruptDocumentError,
+            r"SIGSEGV while opening the PDF \(the file\)",
+        ),
+        (
+            [["count", 2], ChildDiedError(-9)],
+            CorruptDocumentError,
+            r"SIGKILL while reading .*\(page 1\)",
+        ),
         ([ChildProtocolError("too big")], CorruptDocumentError, "invalid output: too big"),
     ],
 )
@@ -345,3 +349,29 @@ def test_child_that_cannot_start_is_a_worker_error(
 def test_has_usable_text_layer(chars: int, coverage: float, usable: bool) -> None:
     page = TextLayerPage(1, "x" * chars, chars, coverage)
     assert has_usable_text_layer(page, SETTINGS) is usable
+
+
+def test_document_deadline_already_passed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    child = ScriptedChild([["count", 1]])
+    monkeypatch.setattr(textlayer, "start_child", lambda target, args, memory: child)
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
+    with pytest.raises(DocumentTimeoutError, match="max_document_s"):
+        read_text_layers(path, deadline=time.monotonic() - 1)
+    assert child.stopped
+
+
+def test_document_deadline_shorter_than_the_page_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = ScriptedChild([["count", 3], ChildTimeoutError()])
+    monkeypatch.setattr(textlayer, "start_child", lambda target, args, memory: child)
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
+    with pytest.raises(DocumentTimeoutError, match=r"doc\.pdf: the whole document took longer"):
+        read_text_layers(path, deadline=time.monotonic() + 5)  # 5 s < the 60 s page limit
+
+
+def test_real_document_deadline_on_a_slow_pdf(tmp_path: Path) -> None:
+    path = build_form_bomb(tmp_path / "bomb.pdf", depth=5)
+    limits = ExtractionLimits(max_document_s=0.05)
+    with pytest.raises(DocumentTimeoutError):
+        read_text_layers(path, limits)

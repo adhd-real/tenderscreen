@@ -3,6 +3,7 @@
 from tenderscreen.documents.errors import (
     CorruptDocumentError,
     DocumentError,
+    DocumentTimeoutError,
     FileTooLargeError,
     OcrFailedError,
     OcrUnavailableError,
@@ -22,6 +23,7 @@ from tenderscreen.documents.models import (
 __all__ = [
     "CorruptDocumentError",
     "DocumentError",
+    "DocumentTimeoutError",
     "ExtractionLimits",
     "ExtractionMethod",
     "ExtractionSettings",

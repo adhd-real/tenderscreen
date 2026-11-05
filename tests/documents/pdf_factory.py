@@ -156,6 +156,31 @@ def build_form_wrapped_scan(path: Path) -> Path:
     return path
 
 
+def build_nested_form_scan(path: Path) -> Path:
+    """A scan two Form XObjects deep: the inner form is scaled, the outer translated.
+
+    The image sits at (10000, 10000) in the inner form; the outer form draws the
+    inner one at half size, shifted by -5000, so on the page it covers the
+    bottom-left quarter (25% of the page). Composing the two form matrices in
+    the wrong order would move it off the page (0%).
+    """
+    width, height = A4
+    far = 10_000.0
+    canvas = Canvas(str(path), pagesize=A4)
+    canvas.beginForm("inner", far, far, far + width, far + height)
+    canvas.drawImage(ImageReader(scan_image(AWARD_SCAN)), far, far, width=width, height=height)
+    canvas.endForm()
+    canvas.beginForm("outer", 0, 0, width, height)
+    canvas.translate(-far / 2, -far / 2)
+    canvas.scale(0.5, 0.5)
+    canvas.doForm("inner")
+    canvas.endForm()
+    canvas.doForm("outer")
+    canvas.showPage()
+    canvas.save()
+    return path
+
+
 def build_form_bomb(path: Path, depth: int, fanout: int = 10) -> Path:
     """A tiny PDF whose page draws nested Form XObjects ``fanout ** depth`` times.
 
