@@ -2,7 +2,7 @@
 
 with open_store() as store:                   # data/raw/ and data/raw/store.sqlite3
     doc = store.documents.save_document(pdf_bytes, url, fetched_at)
-    pages = extract_pages(doc.path, cache=store.cache)
+    pages = extract_pages(doc.path, cache=store.cache, expected_sha256=doc.sha256)
 """
 
 from tenderscreen.store.backend import StoreBackend

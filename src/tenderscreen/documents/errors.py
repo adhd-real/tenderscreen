@@ -47,6 +47,17 @@ class CorruptDocumentError(DocumentError):
         super().__init__(f"{name} is not a readable PDF: {reason}")
 
 
+class ContentMismatchError(DocumentError):
+    """The file is not the document the caller expected: it was changed or damaged."""
+
+    def __init__(self, name: str, expected_sha256: str, actual_sha256: str | None) -> None:
+        found = f"sha256 {actual_sha256[:12]}..." if actual_sha256 else "no readable file"
+        super().__init__(
+            f"{name} is not the expected document (sha256 {expected_sha256[:12]}...): "
+            f"found {found}; it was changed or damaged"
+        )
+
+
 class OcrUnavailableError(DocumentError):
     def __init__(self, problem: str) -> None:
         super().__init__(

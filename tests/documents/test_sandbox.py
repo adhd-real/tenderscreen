@@ -692,3 +692,24 @@ def test_answer_cut_off_by_the_watchdog_is_a_task_timeout() -> None:
         assert caught.value.index == 0
     finally:
         child.close()
+
+
+def test_half_a_character_from_a_worker_is_a_protocol_error(quick_stop: None) -> None:
+    """Found in the whole-PR review: JSON can spell a lone surrogate ("\\ud800"),
+    which reached page text and failed later, when the cache encoded it."""
+    child = start_child(silent, (), None)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(child.conn, "poll", lambda: True)
+        patch.setattr(child.conn, "recv_bytes", lambda limit: b'["result", 0, "x\\ud800"]')
+        with pytest.raises(ChildProtocolError, match="not UTF-8 JSON"):
+            child.receive_ready(1.0)
+    child.stop()
+
+
+def test_paired_surrogates_from_a_worker_are_fine(quick_stop: None) -> None:
+    child = start_child(silent, (), None)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(child.conn, "poll", lambda: True)
+        patch.setattr(child.conn, "recv_bytes", lambda limit: b'["x\\ud83d\\ude00"]')
+        assert child.receive_ready(1.0) == ["x\N{GRINNING FACE}"]
+    child.stop()

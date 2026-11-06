@@ -1,6 +1,7 @@
 """PDF page text: the embedded text layer where usable, otherwise Tesseract OCR."""
 
 from tenderscreen.documents.errors import (
+    ContentMismatchError,
     CorruptDocumentError,
     DocumentError,
     DocumentTimeoutError,
@@ -21,6 +22,7 @@ from tenderscreen.documents.models import (
 )
 
 __all__ = [
+    "ContentMismatchError",
     "CorruptDocumentError",
     "DocumentError",
     "DocumentTimeoutError",

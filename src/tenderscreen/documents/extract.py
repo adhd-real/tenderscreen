@@ -23,6 +23,7 @@ from typing import Final
 import pypdfium2.version
 
 from tenderscreen.documents.errors import (
+    ContentMismatchError,
     DocumentTimeoutError,
     OcrFailedError,
     PageTimeoutError,
@@ -61,7 +62,7 @@ from tenderscreen.documents.textlayer import (
 )
 from tenderscreen.store.cache import ResultCache
 from tenderscreen.store.documents import sha256_file
-from tenderscreen.store.records import CacheKey
+from tenderscreen.store.records import CacheKey, check_sha256
 
 OCR_STAGE: Final = "rendering and OCR"
 # Each worker stops its own Tesseract at the page limit and reports it; the
@@ -106,6 +107,7 @@ def extract_pages(
     limits: ExtractionLimits | None = None,
     settings: ExtractionSettings | None = None,
     cache: ResultCache | None = None,
+    expected_sha256: str | None = None,
 ) -> list[PageText]:
     """One ``PageText`` per page, in page order (page numbers start at 1).
 
@@ -121,27 +123,62 @@ def extract_pages(
     With a ``cache`` (see ``tenderscreen.store``), results are stored under the
     file's sha256 and ``step_version(settings)``: the same document is never
     processed twice, and a damaged cache entry is recomputed, never trusted.
-    Failures are not cached.
+    Failures are not cached. A failure of the cache's database is a
+    ``StoreError`` (from ``tenderscreen.store``).
+
+    ``expected_sha256`` (for example a stored document's) is the sha256 the
+    file must have: ``ContentMismatchError`` if it has another, before or
+    after the work, so pages are never credited to the wrong document.
     """
     path = Path(path)
     limits = limits or ExtractionLimits()
     settings = settings or ExtractionSettings()
-    if cache is None:
+    if expected_sha256 is not None:
+        check_sha256(expected_sha256)
+    elif cache is None:
         return _extract(path, limits, settings)
     check_file(path, limits)  # the size limit applies before the file is read to hash it
     sha256 = sha256_file(path)
+    _require(path, expected_sha256, sha256)
+    if cache is None:
+        pages = _extract(path, limits, settings)
+        _require(path, expected_sha256, _current_sha256(path))  # changed while being read?
+        return pages
+    changed = False
+
+    def unchanged(_: list[PageText]) -> bool:
+        # If the file changed (or vanished) while it was being read, its pages are
+        # not the pages of ``sha256``: never cache them under that hash.
+        nonlocal changed
+        changed = _current_sha256(path) != sha256
+        return not changed
+
     pages = cache.get_or_compute(
         CacheKey(sha256, EXTRACT_PAGES_STEP, step_version(settings)),
         lambda: _extract(path, limits, settings),
         encode=encode_pages,
         decode=decode_pages,
-        # If the file changed while it was being read, its pages are not the
-        # pages of ``sha256``: return them, but never cache them under that hash.
-        keep=lambda _: sha256_file(path) == sha256,
+        keep=unchanged,
     )
+    if changed:
+        _require(path, expected_sha256, _current_sha256(path))
     if len(pages) > limits.max_pages:  # a cached result must respect today's limits too
         raise TooManyPagesError(path.name, len(pages), limits.max_pages)
     return pages
+
+
+def _current_sha256(path: Path) -> str | None:
+    """The file's sha256 now, or None if it can no longer be read."""
+    try:
+        return sha256_file(path)
+    except OSError:
+        return None
+
+
+def _require(path: Path, expected_sha256: str | None, actual_sha256: str | None) -> None:
+    """``ContentMismatchError`` unless the file has the expected sha256 (if any)."""
+    if expected_sha256 is not None and actual_sha256 != expected_sha256:
+        raise ContentMismatchError(path.name, expected_sha256, actual_sha256)
 
 
 def _extract(path: Path, limits: ExtractionLimits, settings: ExtractionSettings) -> list[PageText]:

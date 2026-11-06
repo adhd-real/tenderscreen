@@ -248,6 +248,10 @@ class Child:
             raise ChildDiedError(self._exitcode())
         try:
             message: Json = json.loads(raw.decode("utf-8"))
+            # JSON can spell half a character ("\ud800"). No honest worker sends
+            # one, and such text could not be stored or printed later: refuse it
+            # here, at the boundary (UnicodeEncodeError is a ValueError).
+            json.dumps(message, ensure_ascii=False).encode("utf-8")
         except (ValueError, RecursionError) as exc:
             raise ChildProtocolError("message is not UTF-8 JSON (or is nested too deeply)") from exc
         return message

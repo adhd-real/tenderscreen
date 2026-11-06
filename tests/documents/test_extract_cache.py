@@ -4,12 +4,14 @@ import dataclasses
 import shutil
 from collections.abc import Iterator
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tenderscreen.documents import (
+    ContentMismatchError,
     CorruptDocumentError,
     ExtractionLimits,
     ExtractionMethod,
@@ -22,16 +24,22 @@ from tenderscreen.documents import (
 from tenderscreen.documents import extract as extract_module
 from tenderscreen.documents.extract import (
     EXTRACT_PAGES_STEP,
+    EXTRACT_PAGES_VERSION,
     SETTINGS_NOT_IN_VERSION,
+    _current_sha256,
+    _require,
     step_version,
 )
 from tenderscreen.documents.ocr import Tesseract
-from tenderscreen.store import CacheKey, ResultCache, SQLiteBackend
+from tenderscreen.documents.serialization import encode_pages
+from tenderscreen.ist import IST
+from tenderscreen.store import CacheKey, ResultCache, SQLiteBackend, open_store
 from tests.documents.fake_tesseract import write_fake_tesseract
 from tests.documents.pdf_factory import ScannedPage, TextPage, build_pdf
 from tests.sqlite_tools import run_sql
 
 NO_OCR = ExtractionSettings(tesseract_binary="tesseract-must-not-be-called")
+WHEN = datetime(2026, 11, 6, 9, 0, tzinfo=IST)
 
 
 class CountingExtract:
@@ -118,8 +126,11 @@ def test_tampered_cache_entry_is_recomputed_not_trusted(
 ) -> None:
     path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
     honest = extract_pages(path, settings=NO_OCR, cache=cache)
-    forged = honest[0].text.replace("TENDER", "FORGED").encode()
-    run_sql(db, "UPDATE step_results SET payload = ?", (forged,))  # checksum unchanged
+    # A well-formed payload that decodes fine, with different text: only the
+    # checksum (left unchanged) can tell it was not what was stored.
+    forged_page = replace(honest[0], text=honest[0].text.replace("TENDER", "FORGED"))
+    assert forged_page != honest[0]
+    run_sql(db, "UPDATE step_results SET payload = ?", (encode_pages([forged_page]),))
     assert extract_pages(path, settings=NO_OCR, cache=cache) == honest
     assert counter.runs == 2
     assert cache.stats.discarded == 1
@@ -181,7 +192,7 @@ def test_ocr_results_are_cached(
 def test_step_version_names_what_can_change_the_output(tmp_path: Path) -> None:
     fake = write_fake_tesseract(tmp_path, "exit 1")
     version = step_version(ExtractionSettings(tesseract_binary=str(fake)))
-    assert version.startswith("1;pypdfium2=")
+    assert version.startswith(f"{EXTRACT_PAGES_VERSION};pypdfium2=")
     assert "tesseract=tesseract 0.0.0-fake#" in version  # version plus fingerprint
     assert ";pypdfium2=" in version
     assert "languages=eng+hin" in version
@@ -237,3 +248,92 @@ def test_every_output_setting_is_part_of_the_version() -> None:
     for name, value in changed.items():
         assert step_version(replace(NO_OCR, **{name: value})) != base, name
     assert step_version(replace(NO_OCR, workers=9)) == base
+
+
+# Found in the whole-PR review.
+
+
+def test_stored_file_that_no_longer_matches_its_hash_is_refused(tmp_path: Path) -> None:
+    """The store's own example trusted doc.path; a damaged file was extracted
+    and its pages credited to the original document."""
+    with open_store(tmp_path / "raw") as store:
+        one_page = build_pdf(tmp_path / "one.pdf", [TextPage()]).read_bytes()
+        doc = store.documents.save_document(one_page, "https://example.org/a.pdf", WHEN)
+        build_pdf(doc.path, [TextPage()] * 3)  # damaged on disk after it was stored
+        for cache in (store.cache, None):
+            with pytest.raises(ContentMismatchError, match="not the expected document"):
+                extract_pages(doc.path, settings=NO_OCR, cache=cache, expected_sha256=doc.sha256)
+
+
+def test_matching_file_is_extracted_with_or_without_a_cache(
+    tmp_path: Path, cache: ResultCache
+) -> None:
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
+    sha = _current_sha256(path)
+    assert sha is not None
+    assert extract_pages(path, settings=NO_OCR, expected_sha256=sha)[0].page_number == 1
+    assert len(extract_pages(path, settings=NO_OCR, cache=cache, expected_sha256=sha)) == 1
+
+
+@pytest.mark.parametrize("use_cache", [True, False])
+def test_file_changed_during_extraction_with_an_expected_hash_is_refused(
+    tmp_path: Path, cache: ResultCache, monkeypatch: pytest.MonkeyPatch, use_cache: bool
+) -> None:
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
+    sha = _current_sha256(path)
+    assert sha is not None
+    real = extract_module._extract
+
+    def swap_during_read(
+        path: Path, limits: ExtractionLimits, settings: ExtractionSettings
+    ) -> list[PageText]:
+        pages = real(path, limits, settings)
+        build_pdf(path, [TextPage(), TextPage()])
+        return pages
+
+    monkeypatch.setattr(extract_module, "_extract", swap_during_read)
+    with pytest.raises(ContentMismatchError):
+        extract_pages(
+            path, settings=NO_OCR, cache=cache if use_cache else None, expected_sha256=sha
+        )
+    assert cache_keys(tmp_path / "store.sqlite3") == []
+
+
+def test_file_deleted_during_extraction_is_returned_but_not_cached(
+    tmp_path: Path, cache: ResultCache, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-hash used to raise FileNotFoundError and throw the finished work away."""
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
+    real = extract_module._extract
+
+    def delete_during_read(
+        path: Path, limits: ExtractionLimits, settings: ExtractionSettings
+    ) -> list[PageText]:
+        pages = real(path, limits, settings)
+        path.unlink()
+        return pages
+
+    monkeypatch.setattr(extract_module, "_extract", delete_during_read)
+    assert len(extract_pages(path, settings=NO_OCR, cache=cache)) == 1
+    assert cache_keys(tmp_path / "store.sqlite3") == []
+
+
+def test_malformed_expected_hash_is_refused(tmp_path: Path) -> None:
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
+    with pytest.raises(ValueError, match="sha256"):
+        extract_pages(path, settings=NO_OCR, expected_sha256="not-a-hash")
+
+
+def test_current_sha256_and_require(tmp_path: Path) -> None:
+    path = tmp_path / "f.bin"
+    path.write_bytes(b"x")
+    sha = _current_sha256(path)
+    assert sha is not None
+    assert len(sha) == 64
+    assert _current_sha256(tmp_path / "missing") is None
+    _require(path, None, "anything")  # no expectation: nothing to check
+    _require(path, sha, sha)
+    with pytest.raises(ContentMismatchError, match="found no readable file"):
+        _require(path, sha, None)
+    with pytest.raises(ContentMismatchError, match=r"found sha256 [0-9a-f]{12}\.\.\."):
+        _require(path, sha, "0" * 64)
