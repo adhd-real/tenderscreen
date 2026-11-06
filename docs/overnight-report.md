@@ -309,9 +309,10 @@ CI, CLAUDE.md compliance and the agreement between modules on paise, IST,
   validation and left a stored file with no metadata.
 - A store path that is a folder, or a malformed database row, raised raw
   `sqlite3`/`ValueError` errors instead of `StoreError`.
-- A file deleted mid-extraction, or a worker sending half a character
-  (`"\ud800"`), threw finished OCR away; the sandbox now refuses such
-  messages.
+- A file deleted mid-extraction threw the finished work away (its pages are
+  now returned, just not cached). A worker sending half a character
+  (`"\ud800"`) got it into page text, where it failed only when cached; the
+  sandbox now refuses such messages at the boundary.
 - A failed text-layer reader waited the 0.5 s stop grace before being
   killed (found while speeding up the tests).
 - A multi-page TIFF was pre-filled with page_count 1; TIFF and GIF are now
