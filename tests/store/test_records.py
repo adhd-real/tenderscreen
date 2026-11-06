@@ -1,3 +1,4 @@
+import os
 from datetime import UTC, datetime
 
 import pytest
@@ -56,7 +57,7 @@ def test_source_accepts_web_urls(url: str) -> None:
     assert Source(url, datetime(2026, 10, 15, tzinfo=IST)).url == url
 
 
-def test_source_accepts_non_http_schemes_for_manual_uploads() -> None:
+def test_source_accepts_file_urls_for_manual_uploads() -> None:
     assert Source("file:data/manual/x.pdf", datetime(2026, 10, 15, tzinfo=IST)).url
 
 
@@ -68,3 +69,11 @@ def test_cache_key_validation() -> None:
         CacheKey(SHA, "", "1")
     with pytest.raises(ValueError, match="step name and a step version"):
         CacheKey(SHA, "extract_pages", "")
+
+
+def test_source_url_with_a_lone_surrogate_is_refused() -> None:
+    """Found in the whole-PR review: an undecodable file name passed validation,
+    then failed with UnicodeEncodeError after the bytes had been written."""
+    url = "file:///uploads/" + os.fsdecode(b"bad\xff.pdf")
+    with pytest.raises(ValueError, match="control characters"):
+        Source(url, datetime(2026, 10, 15, tzinfo=IST))

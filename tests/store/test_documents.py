@@ -1,3 +1,4 @@
+import os
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -179,3 +180,23 @@ def test_directory_fsync_refusal_is_not_fatal(
 
     monkeypatch.setattr("tenderscreen.store.documents.os.fsync", cannot_sync)
     documents.sync_directory(tmp_path)
+
+
+# Found in the whole-PR review.
+
+
+def test_bad_source_url_is_refused_before_anything_is_written(store: DocumentStore) -> None:
+    url = "file:///uploads/" + os.fsdecode(b"bad\xff.pdf")
+    with pytest.raises(ValueError, match="control characters"):
+        store.save_document(PDF, url, WHEN)
+    assert stored_files(store) == []
+
+
+def test_first_saved_at_is_the_save_time_not_the_fetch_time(
+    store: DocumentStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = datetime(2026, 11, 6, 9, 15, tzinfo=IST)
+    monkeypatch.setattr("tenderscreen.store.documents.now_ist", lambda: saved)
+    doc = store.save_document(PDF, URL_A, WHEN)  # fetched three weeks earlier
+    assert doc.first_saved_at == saved
+    assert doc.sources[0].fetched_at == WHEN

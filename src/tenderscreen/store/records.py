@@ -37,11 +37,12 @@ def check_source_url(url: str) -> None:
     """Accept http, https and file URLs only, with no spaces or invisible characters.
 
     file: covers documents uploaded by hand; anything else (javascript:, data:)
-    has no business being a document's source.
+    has no business being a document's source. Lone surrogates (an undecodable
+    file name) are refused too: they cannot be stored as text.
     """
     if not url or len(url) > MAX_URL_CHARS:
         raise ValueError(f"source URL must be 1 to {MAX_URL_CHARS} characters")
-    if any(ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf") for ch in url):
+    if any(ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf", "Cs") for ch in url):
         raise ValueError(f"source URL has spaces or control characters: {url[:80]!r}")
     scheme = url.split(":", 1)[0].lower() if ":" in url else ""
     if scheme not in SOURCE_SCHEMES:

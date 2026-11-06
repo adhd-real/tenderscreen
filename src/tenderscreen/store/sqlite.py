@@ -71,10 +71,13 @@ class SQLiteBackend:
     """Store metadata and step results in one SQLite file (or ``":memory:"``)."""
 
     def __init__(self, path: Path | str) -> None:
-        self._conn = sqlite3.connect(path, timeout=30)
+        try:
+            self._conn = sqlite3.connect(path, timeout=30)
+        except sqlite3.Error as exc:  # e.g. the path is a folder, or cannot be created
+            raise StoreError(f"{path} cannot be opened as a store database: {exc}") from exc
         try:
             self._setup(on_disk=str(path) != ":memory:")
-        except sqlite3.DatabaseError as exc:
+        except sqlite3.Error as exc:
             self._conn.close()
             raise StoreError(f"{path} is not a usable store database: {exc}") from exc
         except BaseException:  # e.g. an unknown schema version: still release the file
@@ -150,13 +153,16 @@ class SQLiteBackend:
                 "ORDER BY fetched_at, source_url",
                 (sha256,),
             ).fetchall()
-        return DocumentRecord(
-            sha256=sha256,
-            size_bytes=row[0],
-            content_type=row[1],
-            first_saved_at=_from_timestamp(row[2]),
-            sources=tuple(Source(url, _from_timestamp(fetched)) for url, fetched in sources),
-        )
+        try:
+            return DocumentRecord(
+                sha256=sha256,
+                size_bytes=row[0],
+                content_type=row[1],
+                first_saved_at=_from_timestamp(row[2]),
+                sources=tuple(Source(url, _from_timestamp(fetched)) for url, fetched in sources),
+            )
+        except (ValueError, TypeError) as exc:  # a row this code would never have written
+            raise StoreError(f"store database has a malformed record for {sha256}: {exc}") from exc
 
     def get_entry(self, key: CacheKey) -> CacheEntry | None:
         with _errors("reading a cached result"):

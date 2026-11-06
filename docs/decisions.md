@@ -394,8 +394,10 @@ fixed and tested:
   (it records the re-fetch).
 - `fetched_at` must be timezone-aware (naive times are refused, never assumed)
   and is stored converted to IST, e.g. `2026-10-15T17:00:00+05:30`.
-- Source URLs need a scheme but any scheme is allowed (`file:` for manual
-  uploads); the fetcher's domain allowlist is a separate, later concern.
+- Source URLs must be `http:`, `https:` or `file:` (for manual uploads), with
+  no spaces, control, invisible or lone-surrogate characters (narrowed in two
+  reviews; it first allowed any scheme). The fetcher's domain allowlist is a
+  separate, later concern.
 - The store refuses documents over 100 MB, matching the extraction limit
   (security rule: bound every input).
 

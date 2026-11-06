@@ -143,9 +143,10 @@ def test_unknown_schema_version_is_refused(tmp_path: Path) -> None:
         SQLiteBackend(db)
 
 
-def test_many_processes_opening_a_new_store_at_once(tmp_path: Path) -> None:
+def test_many_threads_opening_a_new_store_at_once(tmp_path: Path) -> None:
     """Found in review: concurrent first opens could write two schema rows,
-    after which every open failed."""
+    after which every open failed. Each thread has its own connection, so they
+    contend for SQLite's file locks as separate processes would."""
     for round_number in range(5):
         db = tmp_path / f"store-{round_number}.sqlite3"
         barrier = threading.Barrier(8)
@@ -209,11 +210,22 @@ def test_setup_does_not_retry_other_errors() -> None:
         bare_backend(LockedConnection(locked_for=1, message="disk I/O error"))._setup(on_disk=False)
 
 
-def test_wal_mode_is_set_once(tmp_path: Path) -> None:
+def test_wal_mode_is_set_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = tmp_path / "store.sqlite3"
     SQLiteBackend(db).close()
     assert run_sql(db, "PRAGMA journal_mode") == [("wal",)]
-    SQLiteBackend(db).close()  # already WAL: not switched again
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def tracing_connect(database: str | Path, timeout: float) -> sqlite3.Connection:
+        conn = real_connect(database, timeout=timeout)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracing_connect)
+    SQLiteBackend(db).close()
+    assert "PRAGMA journal_mode" in statements  # checked...
+    assert not any("journal_mode = WAL" in s for s in statements)  # ...but not set again
 
 
 class FailsInsideTransaction(LockedConnection):
@@ -238,3 +250,47 @@ def test_setup_failure_inside_the_transaction_rolls_back() -> None:
         bare_backend(conn)._setup(on_disk=False)
     assert conn.rolled_back
     assert conn.commits == 0
+
+
+# Found in the whole-PR review.
+
+
+def test_database_path_that_cannot_be_opened_is_a_store_error(tmp_path: Path) -> None:
+    with pytest.raises(StoreError, match="cannot be opened as a store database"):
+        SQLiteBackend(tmp_path)  # a folder, not a file
+
+
+@pytest.mark.parametrize(
+    ("sql", "value"),
+    [
+        ("UPDATE documents SET first_saved_at = ?", "2026-10-15T17:00:00"),  # naive time
+        ("UPDATE documents SET first_saved_at = ?", "yesterday"),
+        ("UPDATE document_sources SET source_url = ?", "javascript:alert(1)"),
+    ],
+)
+def test_malformed_row_is_a_store_error(tmp_path: Path, sql: str, value: str) -> None:
+    db = tmp_path / "store.sqlite3"
+    backend = SQLiteBackend(db)
+    try:
+        backend.record_document(SHA, 10, "application/pdf", WHEN, SOURCE)
+        run_sql(db, sql, (value,))
+        with pytest.raises(StoreError, match="malformed record"):
+            backend.get_document(SHA)
+    finally:
+        backend.close()
+
+
+def test_document_and_source_are_written_together_or_not_at_all(tmp_path: Path) -> None:
+    db = tmp_path / "store.sqlite3"
+    backend = SQLiteBackend(db)
+    try:
+        run_sql(
+            db,
+            "CREATE TRIGGER refuse BEFORE INSERT ON document_sources "
+            "BEGIN SELECT RAISE(ABORT, 'refused by test'); END",
+        )
+        with pytest.raises(StoreError, match="refused by test"):
+            backend.record_document(SHA, 10, "application/pdf", WHEN, SOURCE)
+        assert backend.get_document(SHA) is None  # the document row was rolled back too
+    finally:
+        backend.close()
