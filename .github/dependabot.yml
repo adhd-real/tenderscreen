@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Python packages declared in pyproject.toml (including the pinned [dev] tools).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-packages:
+        patterns: ["*"]
+
+  # GitHub Actions in .github/workflows (updates the pinned SHAs and version comments).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

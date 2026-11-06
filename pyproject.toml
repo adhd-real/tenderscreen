@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tenderscreen"
+version = "0.1.0"
+description = "Reads Indian government tender and award notices and extracts structured fields."
+readme = "README.md"
+requires-python = ">=3.12"
+# Exact pins, like the dev tools below; Dependabot proposes upgrades weekly.
+dependencies = [
+    "pillow==13.0.0",  # page images for OCR (MIT-CMU/HPND)
+    "pypdfium2==5.14.0",  # PDF text layers and page rendering (BSD-3/Apache-2.0); not poppler
+    "tzdata==2026.6",  # IST without system timezone files (zoneinfo falls back to it)
+]
+
+[project.optional-dependencies]
+# Exact pins so the cloud VM and CI run identical tool versions.
+# Dependabot (.github/dependabot.yml) proposes upgrades weekly.
+dev = [
+    "mypy==2.4.1",
+    "pip-audit==2.10.1",
+    "pytest==9.2.0",
+    "pytest-cov==7.1.0",
+    "reportlab==5.1.0",  # tests generate their own PDFs (BSD)
+    "ruff==0.17.3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tenderscreen"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# data/ holds uploaded documents, not code; uploads must never fail lint or CI.
+extend-exclude = ["data"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # import sorting
+    "B",       # bugbear: likely bugs
+    "UP",      # pyupgrade: modern syntax
+    "SIM",     # simplifications
+    "RUF",     # ruff-specific checks
+    "S",       # bandit: security issues
+    "PT",      # pytest style
+    "DTZ",     # timezone-naive datetimes (tender deadlines are IST)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# assert is how pytest checks results; it stays banned in src/ because
+# `python -O` strips asserts, so they must never guard real logic.
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+# Hand-written stubs for libraries without type information (see stubs/README.md).
+mypy_path = "stubs"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# --cov measures src/tenderscreen on every run, and [tool.coverage.report]
+# fail_under fails the run below 90% line coverage. To run a subset of tests
+# without the coverage gate: pytest --no-cov tests/<path>
+addopts = ["-ra", "--strict-markers", "--strict-config", "--cov"]
+# The post-edit hook runs only fast tests: pytest -m "not slow" --no-cov.
+# Plain pytest (the check before every commit, and CI) runs everything.
+markers = [
+    "slow: real-Tesseract OCR, a file of 1 MB or more, or over 1 s; skipped by the post-edit hook only",
+]
+
+[tool.coverage.run]
+source_pkgs = ["tenderscreen"]
+
+[tool.coverage.report]
+fail_under = 90
+# coverage.py rounds the total to `precision` digits before comparing it with
+# fail_under; with the default of 0, 89.5% would round up and pass.
+precision = 2
+# Count modules in src/ folders that lack __init__.py instead of skipping them.
+include_namespace_packages = true
+show_missing = true
+skip_covered = true

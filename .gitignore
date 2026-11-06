@@ -1,0 +1,35 @@
+# Secrets: never commit. .env.example (placeholders only) is allowed.
+.env
+.env.*
+!.env.example
+
+# Downloaded raw documents (scratch, re-downloadable).
+# NOTE: data/manual/ is deliberately NOT ignored; it holds public tender
+# documents uploaded through GitHub for cloud sessions to read.
+data/raw/
+# The store's default folder is relative to where it runs; ignore it anywhere.
+**/data/raw/
+
+# Evaluation outputs (python -m tenderscreen.evals writes here by default).
+eval-results/
+
+# Virtual environment (created by .claude/hooks/session-start.sh)
+.venv/
+
+# Python and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build output
+build/
+dist/
+*.egg-info/
+
+# Personal Claude Code settings (shared settings live in .claude/settings.json)
+.claude/settings.local.json

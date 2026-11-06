@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Lint, types, tests, audit (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    env:
+      # OCR tests fail instead of skipping when Tesseract or a Devanagari font is
+      # missing (tests/conftest.py), so they always run in CI.
+      TENDERSCREEN_REQUIRE_OCR: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install OCR system packages (Tesseract with Hindi, Noto fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-hin fonts-noto-core
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check --output-format=github .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Type check (mypy)
+        run: mypy
+
+      # pyproject.toml makes pytest measure coverage of src/tenderscreen and fail
+      # below 90% line coverage ([tool.coverage.report] fail_under).
+      - name: Tests with coverage gate (pytest)
+        run: pytest
+
+      - name: Licence check (fail on GPL, LGPL or AGPL dependencies)
+        run: python -m tenderscreen.devtools.licence_check
+
+      - name: Dependency vulnerability audit (pip-audit)
+        run: pip-audit --skip-editable
+
+  secrets:
+    name: Secret scan (TruffleHog)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history, so every pushed commit is scanned
+          persist-credentials: false
+
+      - uses: trufflesecurity/trufflehog@ea68ca03c865c5f324e86e849ced20ed3cf9dbbb # v3.99.8
+        with:
+          # The action otherwise runs the scanner image tagged "latest"; pin it
+          # by digest too. Dependabot bumps only the action SHA above, so update
+          # this line by hand to match when it does.
+          version: 3.99.8@sha256:674b2f187620a19df77f44cf9a7d77efcc581a5662accef2f2739cbb46ba4a3a
+          extra_args: --results=verified,unknown
