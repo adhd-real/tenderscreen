@@ -8,7 +8,7 @@ reviewed by a fresh-context reviewer, fixed, and committed on branch
 
 | | |
 |---|---|
-| Tests | 1,041, all passing on Python 3.12 and 3.13; none skipped (Tesseract was installed here); 13 marked `slow` |
+| Tests | 1,041, all passing on Python 3.12 and 3.13; none skipped (Tesseract was installed here); 19 marked `slow` |
 | Coverage of `src/` | 100% (CI gate: 90%) |
 | ruff, ruff format, mypy --strict, pip-audit, licence check | all pass |
 | CI on GitHub | green on the latest commit (3.12, 3.13 and the secret scan), OCR tests included; one earlier run failed on a sandbox race (fixed, see Task C) and one was cancelled by a newer push |
@@ -94,10 +94,16 @@ skip.
   that write a file of 1 MB or more. A guard (`tests/markers.py`) stops any
   run in which a test uses the `tesseract` fixture without the marker; it
   cannot see a test that reaches Tesseract some other way, which is why OCR
-  tests should always use the fixture. Measured: the hook's test step went
-  from 64.8 s to 52.7 s. Most of what remains is tests that wait for timeouts
-  on purpose (about 28 s); they are neither OCR nor large-file tests, so I left
-  them unmarked. Marking them is the next step if the hook should be faster.
+  tests should always use the fixture.
+- **Faster hook (your follow-up):** timeout tests now use the shortest limits
+  that still prove their point on a slow runner, set inside the tests only;
+  the 6 tests still over 1 s are marked slow too (19 in all). The hook's test
+  step went from 53-61 s to 34-36 s, and the full suite from 65 s to 53 s.
+  **Under 10 s is not reachable this way**: about 160 worker-process starts
+  remain, each about 0.11 s, spread over tests well under 1 s. Measured
+  options, your decision: lazy package imports (a production change) 23 s;
+  parallel tests with pytest-xdist (a new dev dependency) 11-12.6 s; both
+  8.4 s. Details in decisions.md.
 - **Found in review and fixed:** coverage rounded 89.5% up to a pass (now
   `precision = 2`); some GPL spellings slipped past ("GNU Public License");
   `License: UNKNOWN` counted as a licence.

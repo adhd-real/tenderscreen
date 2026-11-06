@@ -106,9 +106,11 @@ Choices made while working unattended, with the reason for each. Newest last.
   the half-sent message has arrived, so a short watchdog cannot make them pass
   for the wrong reason. The changed tests passed three runs in a row with six
   busy loops competing for the four CPUs.
-- One test got a longer limit: the document-deadline test on a PDF bomb used
-  0.05 s, which ran out before the reader had started, so it never exercised
-  the deadline during parsing; it now uses 0.5 s.
+- I first gave the document-deadline test on a PDF bomb 0.5 s instead of
+  0.05 s, so the deadline would fall mid-parse. That assumed the bomb takes
+  seconds to read; it takes 0.8 s here and under 0.5 s on CI, so CI failed
+  once (run 22). It is back to 0.05 s, which always runs out while the reader
+  starts; a scripted-child test already covers the deadline mid-document.
 - **Marked slow because they still take over 1 s** (6): the whole-document
   deadline during OCR (it must outlast the text-layer pass on a slow runner),
   the hung-worker test (1 s parent deadline), the memory-cap bomb, and three

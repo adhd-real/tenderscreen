@@ -380,8 +380,9 @@ def test_document_deadline_shorter_than_the_page_limit(
 
 def test_real_document_deadline_on_a_slow_pdf(tmp_path: Path, quick_stop: None) -> None:
     path = build_form_bomb(tmp_path / "bomb.pdf", depth=5)
-    # 0.5 s: past the reader's start here, so the deadline falls while it parses
-    # the bomb (which takes many seconds); 0.05 s expired before it read anything.
-    limits = ExtractionLimits(max_document_s=0.5)
+    # 0.05 s always runs out while the real reader starts. A longer limit would race
+    # the bomb, which reads in under a second; the deadline falling mid-document is
+    # covered by test_document_deadline_shorter_than_the_page_limit.
+    limits = ExtractionLimits(max_document_s=0.05)
     with pytest.raises(DocumentTimeoutError):
         read_text_layers(path, limits)
