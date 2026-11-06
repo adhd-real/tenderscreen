@@ -27,11 +27,22 @@ from tenderscreen.datacheck.records import (
 )
 from tenderscreen.datacheck.summary import code, render_summary
 from tenderscreen.documents import ExtractionLimits
-from tenderscreen.store import DEFAULT_ROOT, ResultCache, open_store
+from tenderscreen.store import DEFAULT_ROOT, ResultCache, StoreError, open_store
+from tenderscreen.store.facade import DATABASE_NAME
 
 RECORDS_NAME: Final = "records.csv"
 SUMMARY_NAME: Final = "records-summary.md"
 NOT_DOCUMENTS: Final = frozenset({RECORDS_NAME, SUMMARY_NAME, "README.md"})
+
+
+class CacheUnavailableError(Exception):
+    """The OCR cache cannot be opened; nothing was read or written."""
+
+    def __init__(self, root: Path, cause: Exception) -> None:
+        super().__init__(
+            f"the OCR cache in {root} cannot be used ({cause}). It is only a cache: delete "
+            f"{root / DATABASE_NAME}, choose another --store, or run with --no-ocr"
+        )
 
 
 @dataclass(slots=True)
@@ -69,7 +80,7 @@ def check(
     cache: ResultCache | None = None,
     limits: ExtractionLimits | None = None,
 ) -> CheckResult:
-    """Pre-fill the records in memory; nothing is written here."""
+    """Pre-fill the records in memory; records.csv is not written here (the OCR cache may be)."""
     records = read_records(manual_dir / RECORDS_NAME)
     result = CheckResult(records)
     documents = list_documents(manual_dir)
@@ -101,7 +112,11 @@ def check(
 def run(manual_dir: Path, *, ocr: bool, store_root: Path) -> str:
     """Check, write records.csv if anything changed, write and return the summary."""
     if ocr:
-        with open_store(store_root) as store:
+        try:
+            store = open_store(store_root)
+        except (StoreError, OSError) as exc:  # a damaged database, a file in its place
+            raise CacheUnavailableError(store_root, exc) from exc
+        with store:
             result = check(manual_dir, ocr=True, cache=store.cache)
     else:
         result = check(manual_dir, ocr=False)
@@ -140,6 +155,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(run(args.manual_dir, ocr=not args.no_ocr, store_root=args.store))
     except RecordsError as exc:
         print(f"error: {exc}. records.csv was not changed.", file=sys.stderr)
+        return 2
+    except CacheUnavailableError as exc:
+        print(f"error: {exc}. records.csv was not changed.", file=sys.stderr)
+        return 2
+    except OSError as exc:  # e.g. records.csv cannot be written (it is replaced atomically)
+        print(f"error: {exc}", file=sys.stderr)
         return 2
     except UnicodeDecodeError:
         print(

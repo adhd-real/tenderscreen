@@ -26,7 +26,7 @@ from tenderscreen.documents.sandbox import (
     TaskFailedError,
     TaskTimeoutError,
 )
-from tenderscreen.store import open_store
+from tenderscreen.store import StoreError, open_store
 from tests.documents.pdf_factory import (
     ENGLISH_NOTICE,
     HINDI_NOTICE,
@@ -341,3 +341,51 @@ def test_html_parse_is_stopped_after_the_time_limit(tmp_path: Path) -> None:
     limits = ExtractionLimits(page_timeout_s=0.001)
     language, problem = html_language(path, limits)
     assert (language, problem) == ("", "language not checked: reading the page took over 0.001 s")
+
+
+# Found in the whole-PR review.
+
+
+@pytest.mark.parametrize(
+    ("suffix", "fmt", "frames", "page_count"),
+    [
+        (".png", "png", 1, "1"),
+        (".jpg", "jpeg", 1, "1"),
+        (".tif", "tiff", 3, ""),  # a TIFF can hold several pages: never guess 1
+        (".gif", "gif", 2, ""),
+    ],
+)
+def test_image_page_count_is_filled_only_when_certain(
+    tmp_path: Path, suffix: str, fmt: str, frames: int, page_count: str
+) -> None:
+    path = tmp_path / f"scan{suffix}"
+    images = [scan_image([f"PAGE {n}"]) for n in range(frames)]
+    if fmt == "gif":
+        images = [image.convert("P") for image in images]
+    images[0].save(path, save_all=frames > 1, append_images=images[1:])
+    assert inspect_file(path, ocr=False) == FileFacts(fmt, "scanned (image)", page_count)
+
+
+def test_cache_failure_during_ocr_is_a_problem_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def locked(*args: object, **kwargs: object) -> None:
+        raise StoreError("store database error while storing a cached result: locked")
+
+    monkeypatch.setattr("tenderscreen.datacheck.inspect.extract_pages", locked)
+    facts = inspect_file(build_pdf(tmp_path / "scan.pdf", [ScannedPage()]), ocr=True)
+    assert (facts.text_layer_or_scanned, facts.page_count, facts.language) == ("scanned", "1", "")
+    assert facts.problem.startswith("language not checked: the OCR cache failed: ")
+
+
+@pytest.mark.parametrize("stage", ["read_text_layers", "extract_pages"])
+def test_file_that_vanishes_is_a_problem_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    def vanished(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(f"tenderscreen.datacheck.inspect.{stage}", vanished)
+    facts = inspect_file(build_pdf(tmp_path / "scan.pdf", [ScannedPage()]), ocr=True)
+    assert facts.file_format == "pdf"
+    assert facts.problem.endswith("No such file or directory")

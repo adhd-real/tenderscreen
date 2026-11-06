@@ -12,6 +12,7 @@ from tenderscreen.datacheck.records import COLUMNS, PREFILLED, template_csv
 from tenderscreen.datacheck.run import (
     RECORDS_NAME,
     SUMMARY_NAME,
+    CacheUnavailableError,
     check,
     list_documents,
     main,
@@ -276,3 +277,52 @@ def test_main_broken_quoting_changes_nothing(
     assert "broken CSV at or before line 3" in err
     assert "records.csv was not changed" in err
     assert (manual / RECORDS_NAME).read_text(encoding="utf-8") == broken
+
+
+# Found in the whole-PR review: an unusable OCR cache crashed the kit with a
+# traceback and threw away the run.
+
+
+def test_unusable_cache_folder_is_one_clear_error(
+    manual: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = (manual / RECORDS_NAME).read_text(encoding="utf-8")
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("x", encoding="utf-8")
+    assert main(["--manual-dir", str(manual), "--store", str(blocker)]) == 2
+    err = capsys.readouterr().err
+    assert "error: the OCR cache in" in err
+    assert "run with --no-ocr. records.csv was not changed." in err
+    assert "Traceback" not in err
+    assert (manual / RECORDS_NAME).read_text(encoding="utf-8") == before
+
+
+def test_damaged_cache_database_is_one_clear_error(
+    manual: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "store.sqlite3").write_bytes(b"not a database at all" * 100)
+    assert main(["--manual-dir", str(manual), "--store", str(raw)]) == 2
+    err = capsys.readouterr().err
+    assert "is not a usable store database" in err
+    assert "delete" in err
+    assert "store.sqlite3" in err
+
+
+def test_run_raises_cache_unavailable(manual: Path, tmp_path: Path) -> None:
+    blocker = tmp_path / "file"
+    blocker.write_text("x", encoding="utf-8")
+    with pytest.raises(CacheUnavailableError, match="It is only a cache"):
+        run(manual, ocr=True, store_root=blocker)
+
+
+def test_records_that_cannot_be_written_are_one_clear_error(
+    manual: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def disk_full(path: Path, records: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("tenderscreen.datacheck.run.write_records", disk_full)
+    assert main(["--manual-dir", str(manual), "--no-ocr"]) == 2
+    assert "error: [Errno 28] No space left on device" in capsys.readouterr().err

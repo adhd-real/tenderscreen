@@ -83,8 +83,11 @@ where award date, winning bidder and contract value appear.
   **Results of Tenders**). Search pages on such portals often ask for a captcha;
   record it.
 - Documents may be in English, Hindi or Punjabi. The kit recognises Hindi
-  (Devanagari) and English; Punjabi in Gurmukhi script shows as
-  `other script`.
+  (Devanagari) and English. Punjabi in Gurmukhi script shows as
+  `other script` only when Gurmukhi is most of the text: a bilingual
+  Punjabi/English notice comes out `english`, and a Gurmukhi scan stays blank
+  (OCR reads only English and Hindi, so its quality is low). Check the language
+  of Punjab documents by eye.
 
 ### GeM (gem.gov.in)
 
@@ -122,7 +125,7 @@ can leave the four kit columns empty; the kit fills them.
 | `language` | kit fills for PDFs and web pages: `english`, `hindi`, `hindi+english` or `other script`. It leaves the cell empty for images, for scans whose OCR quality is low, and when there is too little text: fill those in by eye. |
 | `file_format` | kit fills: `pdf`, `html`, `jpeg`, `png`, ... |
 | `text_layer_or_scanned` | kit fills: `text layer`, `scanned` or `mixed` (PDF pages differ) for PDFs, `text (html)` for web pages, `scanned (image)` for image files |
-| `page_count` | kit fills (PDFs) |
+| `page_count` | kit fills for PDFs, and `1` for PNG and JPEG images; a TIFF or GIF can hold several pages, so count those yourself |
 | `has_award_date` ... `has_contact_details` | `y` if the document states it, `n` if it does not. `has_pbg_percentage_or_deadline` is `y` if either the PBG percentage or its deadline is given. |
 | `notes` | anything else: "login needed for result", "amount only in words", ... |
 
@@ -184,7 +187,9 @@ It will:
 
 Scanned PDFs are OCR'd (English and Hindi) to detect their language; this needs
 Tesseract and can take a minute per long document. Results are cached in
-`data/raw/`, so a second run is quick. To skip OCR:
+`data/raw/`, so a second run in the same session is quick (`data/raw/` is not
+committed, so a new cloud session OCRs again). If the kit says the OCR cache
+cannot be used, delete `data/raw/store.sqlite3` (it is only a cache) or skip OCR:
 
 ```bash
 python -m tenderscreen.datacheck --no-ocr

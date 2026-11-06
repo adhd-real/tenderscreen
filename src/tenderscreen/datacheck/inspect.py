@@ -28,7 +28,7 @@ from tenderscreen.documents.sandbox import (
     run_tasks,
 )
 from tenderscreen.documents.textlayer import has_usable_text_layer, read_text_layers
-from tenderscreen.store import ResultCache
+from tenderscreen.store import ResultCache, StoreError
 from tenderscreen.store.documents import sniff_content_type
 
 FORMAT_NAMES: Final = {
@@ -153,6 +153,8 @@ def inspect_pdf(
         layers = read_text_layers(path, limits)
     except DocumentError as exc:
         return FileFacts("pdf", problem=str(exc))
+    except OSError as exc:  # removed or unreadable since it was listed
+        return FileFacts("pdf", problem=f"could not be read: {exc.strerror or exc}")
     usable = [has_usable_text_layer(page, settings) for page in layers]
     status = "text layer" if all(usable) else "scanned" if not any(usable) else "mixed"
     facts = {"file_format": "pdf", "text_layer_or_scanned": status if layers else ""}
@@ -165,6 +167,10 @@ def inspect_pdf(
         pages = extract_pages(path, limits=limits, settings=settings, cache=cache)
     except DocumentError as exc:
         return FileFacts(**facts, problem=f"language not checked: {exc}")
+    except StoreError as exc:  # e.g. the cache is locked by another run: skip, don't abort
+        return FileFacts(**facts, problem=f"language not checked: the OCR cache failed: {exc}")
+    except OSError as exc:
+        return FileFacts(**facts, problem=f"language not checked: {exc.strerror or exc}")
     doubtful = [
         page.page_number
         for page in pages
@@ -206,5 +212,8 @@ def inspect_file(
         language, problem = html_language(path, limits)
         return FileFacts(file_format, "text (html)", language=language, problem=problem)
     if media_type.startswith("image/"):
-        return FileFacts(file_format, "scanned (image)", "1")
+        # A PNG or JPEG holds one page; a TIFF (or GIF) can hold several, and a
+        # wrong pre-filled count is worse than a blank one.
+        single = media_type in {"image/png", "image/jpeg"}
+        return FileFacts(file_format, "scanned (image)", "1" if single else "")
     return FileFacts(file_format)

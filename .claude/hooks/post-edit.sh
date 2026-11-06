@@ -36,8 +36,8 @@ if ! out="$("$bin/ruff" check --quiet "$file_path" 2>&1)"; then
 fi
 
 # Fast tests only: tests marked slow (real-Tesseract OCR, files of 1 MB or
-# more) are left to plain `pytest`, which the check before every commit and CI
-# run. --no-cov: the 90% coverage gate applies to the full suite, not a subset.
+# more, or over 1 s) are left to plain `pytest`, which the check before every
+# commit and CI run. --no-cov: the 90% coverage gate applies to the full suite.
 if ! out="$("$bin/pytest" -x -q --no-header -m "not slow" --no-cov 2>&1)"; then
   add_failure "pytest -x -m 'not slow' (last 60 lines)" "$(tail -n 60 <<<"$out")"
 fi
