@@ -671,3 +671,33 @@ fixed and tested:
   durable too, and a new file respects the umask (it was always `0644`).
 - The test that HTML is read in a worker now fails if it is read in the parent.
 
+## Whole-PR review (6 November)
+
+Two fresh-context reviewers checked the whole PR, one deep on Task D, one on
+how the tasks fit together. Choices made while fixing what they found:
+
+- **`expected_sha256` on `extract_pages`**, rather than having the store
+  re-check files itself: the hash is already computed there, the check covers
+  both the cached and uncached paths, and it runs again after the work, so a
+  file swapped mid-read raises `ContentMismatchError` instead of returning
+  another document's pages. The store's example passes `doc.sha256`.
+- **Half characters from a worker are refused, not repaired**: the sandbox
+  treats a message spelling a lone surrogate as a protocol error. No honest
+  worker sends one (pypdfium2 decodes text with `errors="ignore"`, and
+  Tesseract's output is read as strict UTF-8), so replacing them would only
+  hide a misbehaving worker.
+- **The data check kit treats its cache as optional**: an unusable cache at
+  the start stops the run with one line saying how to fix it (nothing is read
+  or written); a cache failure mid-run becomes that file's problem in the
+  summary, and the run finishes. The cache's own policy (a failed write fails
+  the step) is unchanged: whether to make it best-effort is listed for you in
+  the report.
+- **Image page counts**: PNG and JPEG always hold one page, so they get `1`;
+  TIFF and GIF can hold several and are left blank, since a wrong pre-filled
+  value is worse than a blank one.
+- **A failed text-layer reader is killed at once** (no stop grace), as
+  `run_tasks` already did for workers since the second sandbox review.
+- Store errors: lone surrogates in source URLs are refused before anything is
+  written; a store path that cannot be opened and a malformed row are
+  `StoreError`, as callers expect.
+

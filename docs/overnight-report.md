@@ -8,10 +8,10 @@ reviewed by a fresh-context reviewer, fixed, and committed on branch
 
 | | |
 |---|---|
-| Tests | 1,041, all passing on Python 3.12 and 3.13; none skipped (Tesseract was installed here); 19 marked `slow` |
+| Tests | 1,071, all passing on Python 3.12 and 3.13; none skipped (Tesseract was installed here); 19 marked `slow` |
 | Coverage of `src/` | 100% (CI gate: 90%) |
 | ruff, ruff format, mypy --strict, pip-audit, licence check | all pass |
-| CI on GitHub | green on the latest commit (3.12, 3.13 and the secret scan), OCR tests included; one earlier run failed on a sandbox race (fixed, see Task C) and one was cancelled by a newer push |
+| CI on GitHub | runs 3.12, 3.13 and the secret scan, OCR tests included; two earlier runs failed (a sandbox race, and a test timeout I set too short; both fixed) and one was cancelled by a newer push |
 
 Every choice I made without you is in [decisions.md](decisions.md), task by
 task, including what each review found.
@@ -58,7 +58,9 @@ task, including what each review found.
    does not name MPL, so decide whether that is acceptable.
 9. **Small CLAUDE.md wording.** I may only add lines to CLAUDE.md, so "Run all
    five before every commit" now undercounts the commands above it (six checks
-   plus a subset command). Consider "Run all of these".
+   plus two subset commands). Consider "Run all of these".
+10. **Open questions from the whole-PR review** (6 November): nine design
+    points listed at the end of this report, under "Whole-PR review".
 
 ## Setup-script line for the cloud environment
 
@@ -97,8 +99,9 @@ skip.
   tests should always use the fixture.
 - **Faster hook (your follow-up):** timeout tests now use the shortest limits
   that still prove their point on a slow runner, set inside the tests only;
-  the 6 tests still over 1 s are marked slow too (19 in all). The hook's test
-  step went from 53-61 s to 34-36 s, and the full suite from 65 s to 53 s.
+  the 6 tests still over 1 s are marked slow too (19 in all). Measured on
+  this 4-CPU container, the whole hook went from 53-61 s to 32-33 s (1,052
+  fast tests), and the full suite from 65 s to about 50 s.
   **Under 10 s is not reachable this way**: about 160 worker-process starts
   remain, each about 0.11 s, spread over tests well under 1 s. Measured
   options, your decision: lazy package imports (a production change) 23 s;
@@ -137,7 +140,7 @@ skip.
   pypdfium2 and OCR'd by Tesseract (eng+hin) in parallel worker processes.
   Limits: 100 MB, 1,000 pages and 60 s per page by default, plus 1 GiB of memory
   per worker and 30 minutes per document, each failing with its own clear error.
-- **Tests:** 240, generating their own PDFs: text layer, scanned text, mixed,
+- **Tests:** 244, generating their own PDFs: text layer, scanned text, mixed,
   empty, corrupt, oversized, Hindi (with Noto Devanagari), PDF bombs. All OCR
   tests ran here (Tesseract 5.3.4 installed without trouble). Coverage 100%.
 - **Decisions:** a page's text layer counts if it has 40 letters and digits, or
@@ -171,7 +174,7 @@ skip.
   cache=...)` goes through it; its step version covers the code, pypdfium2 and
   PDFium versions, Tesseract's version and language files, and every
   output-affecting setting.
-- **Tests:** 107 (94 in `tests/store/`, 13 for the `extract_pages` cache in
+- **Tests:** 122 (102 in `tests/store/`, 20 for the `extract_pages` cache in
   `tests/documents/test_extract_cache.py`). Coverage 100%. They prove dedupe,
   cache hits (no recompute), invalidation on a version change, and that a
   corrupted entry (changed payload, wrong checksum, undecodable) is recomputed.
@@ -185,6 +188,9 @@ skip.
   thrashed); the checksum did not cover the key; some settings were missing from
   the step version; a document and its source were written in separate
   transactions; source URLs accepted `javascript:` and `data:`.
+- **Found in the whole-PR review (6 November) and fixed:** see "Whole-PR
+  review" below; the main one is that `extract_pages(doc.path)` trusted a
+  stored file that no longer matched its hash.
 - **Skipped or failing:** nothing. Postgres itself is not built (the task asked
   for the interface).
 
@@ -229,7 +235,7 @@ skip.
   records contain each field, records by portal and notice type, fields per
   portal, and problems. [data-check.md](data-check.md) is the step-by-step guide
   for eprocure.gov.in, eproc.punjab.gov.in and gem.gov.in.
-- **Tests:** 139, on synthetic files only; `test_rerun_never_overwrites_manual_entries`
+- **Tests:** 150, on synthetic files only; `test_rerun_never_overwrites_manual_entries`
   is the acceptance test. Coverage 100%.
 - **Decisions:** a malformed CSV stops the kit with the line number and changes
   nothing; extra columns, row order, BOM and line endings are kept, and an
@@ -273,13 +279,82 @@ Tesseract itself is a system program (Apache-2.0), called as a separate process.
   committed and pushed work, so D, E and F were committed after every check had
   passed but while their reviews were still running. Their fixes are separate
   commits, which also makes them easy to read on their own.
-- **CI:** one run was cancelled because the next push superseded it, and one
-  failed on the sandbox race described under Task C, which is now fixed.
+- **CI:** one run was cancelled because the next push superseded it. Two
+  failed: the sandbox race described under Task C, and on 5 November a test
+  limit I lengthened assuming a PDF bomb reads slowly (it reads in under
+  0.5 s on CI); both are fixed.
 - **Housekeeping:** the container restarted once during a benchmark (nothing
   lost). Some `/tmp/tenderscreen-ocr-*` folders left by early test runs (before
   the sandbox rewrite cleaned up after itself) could not be deleted, because the
   permission check refused a sweep of the shared `/tmp`; they are harmless and
   vanish with the container.
+
+## Whole-PR review (6 November)
+
+Two fresh-context reviewers checked the whole PR against CLAUDE.md: one
+went deep on Task D (store and cache), one on how the tasks fit together.
+(Task D also had its own review on the night; its fixes are commit 8665964.)
+CI, CLAUDE.md compliance and the agreement between modules on paise, IST,
+1-based pages and limits were found sound. Fixed, each with tests:
+
+- `extract_pages(doc.path, cache=...)`, the store's own example, trusted a
+  stored file damaged after saving and credited its pages to the original
+  document. `extract_pages` now takes `expected_sha256` and raises
+  `ContentMismatchError` on a mismatch, before or after the work.
+- The data check kit crashed with a traceback and lost the run when its
+  OCR cache was unusable (damaged, a file in its place, or locked by another
+  run). Now: one clear line and exit 2 at the start, or a per-file problem
+  mid-run while the rest is kept.
+- A source URL with a lone surrogate (an undecodable file name) passed
+  validation and left a stored file with no metadata.
+- A store path that is a folder, or a malformed database row, raised raw
+  `sqlite3`/`ValueError` errors instead of `StoreError`.
+- A file deleted mid-extraction, or a worker sending half a character
+  (`"\ud800"`), threw finished OCR away; the sandbox now refuses such
+  messages.
+- A failed text-layer reader waited the 0.5 s stop grace before being
+  killed (found while speeding up the tests).
+- A multi-page TIFF was pre-filled with page_count 1; TIFF and GIF are now
+  left blank.
+- Weak or misnamed tests: a tampering test that passed without the checksum
+  check, two tests named for more than they checked, and untested points (one
+  transaction per document and source, the save time).
+
+**Open questions for you** (not changed):
+
+1. **A failed cache write**: fail the step (today; finished OCR is lost) or
+   log it and return the result (the cache is only an optimisation)?
+2. **Old cache entries are never purged**, and because the version string
+   mixes the code version with the settings, `invalidate_step` would also
+   delete valid entries for other settings. Storing the code version
+   separately would allow a safe purge.
+3. **Faster hook**: lazy package imports (23 s) and/or parallel tests with
+   pytest-xdist (11-12.6 s; both 8.4 s). See Task A.
+4. **Dates between extraction and evals**: `value.isoformat()` of a date
+   without a time reads back as having a time and scores wrong. A
+   `format_date()` in parsing, used by the extraction schema, would remove the
+   trap.
+5. **Evals never check citations**: a correct value with an invented quote
+   scores correct, though CLAUDE.md rejects such a field. Checking needs the
+   documents' page text at evaluation time.
+6. **Contact details in committed labels**: labelling.md has you paste names
+   and phone numbers into `data/labels/*.json`, which git keeps forever (the
+   reports hide them). Labelling presence only, or a hash, would fit "never log
+   phone numbers" better.
+7. **One limit, two definitions**: 100 MB is defined in the store and in
+   extraction, with two exception types the fetcher will have to catch.
+8. **Two vocabularies**: records.csv's seven `has_*` columns and the 12 label
+   fields differ (one combined PBG column vs two PBG fields; tender id, EMD,
+   deadline and organisation only in labels), so the kit's counts and eval
+   results cannot be compared.
+9. **Smaller ones**: no guard against two processes extracting the same
+   document at once; a long-running process keeps an old Tesseract
+   fingerprint after an upgrade; for Postgres, store times as `timestamptz`;
+   empty content is accepted (as text/plain); stored raw files are owner-only
+   (0600) and crash leftovers (`.incoming-*`) are never cleaned up; two
+   `normalise_text` functions (parsing and evals) follow different rules;
+   the kit re-reads text layers on every run for files with a blank cell;
+   `test_extract_cache.py` and `test_template.py` mirror no module.
 
 ## Pull request
 
