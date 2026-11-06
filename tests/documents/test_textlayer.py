@@ -19,6 +19,7 @@ from tenderscreen.documents.errors import (
 )
 from tenderscreen.documents.models import ExtractionLimits, ExtractionSettings
 from tenderscreen.documents.sandbox import (
+    Child,
     ChildDiedError,
     ChildProtocolError,
     ChildStartError,
@@ -47,6 +48,7 @@ from tests.documents.pdf_factory import (
     build_pdf,
     build_pdf_bytes,
 )
+from tests.documents.worker_tasks import count_then_stall
 
 LIMITS = ExtractionLimits()
 SETTINGS = ExtractionSettings()
@@ -174,14 +176,7 @@ def test_too_many_pages(tmp_path: Path) -> None:
         read_text_layers(path, ExtractionLimits(max_pages=2))
 
 
-@pytest.fixture
-def quick_stop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A reader stuck on a bomb never reads the stop message; it is killed after the
-    stop grace either way, and the default 0.5 s only makes the test slow."""
-    monkeypatch.setattr("tenderscreen.documents.sandbox.STOP_GRACE_S", 0.05)
-
-
-def test_pdf_bomb_times_out_without_hanging_the_caller(tmp_path: Path, quick_stop: None) -> None:
+def test_pdf_bomb_times_out_without_hanging_the_caller(tmp_path: Path) -> None:
     """Found in review: 2 KB of nested forms kept the main process busy for 19 s."""
     path = build_form_bomb(tmp_path / "bomb.pdf", depth=5)
     with pytest.raises(PageTimeoutError, match=r"bomb\.pdf page 1: reading the text layer"):
@@ -280,6 +275,7 @@ class ScriptedChild:
     def __init__(self, script: list[Json | Exception]) -> None:
         self.script = script
         self.stopped = False
+        self.graceful: bool | None = None
 
     def receive(self, timeout: float) -> Json:
         item = self.script.pop(0)
@@ -287,8 +283,9 @@ class ScriptedChild:
             raise item
         return item
 
-    def stop(self) -> None:
+    def stop(self, *, graceful: bool = True) -> None:
         self.stopped = True
+        self.graceful = graceful
 
 
 @pytest.mark.parametrize(
@@ -329,6 +326,7 @@ def test_read_text_layers_maps_every_child_problem(
     with pytest.raises(error, match=message):
         read_text_layers(build_pdf(tmp_path / "doc.pdf", [TextPage()]))
     assert child.stopped
+    assert child.graceful is False  # a failed reader is killed at once
 
 
 def test_child_that_cannot_start_is_a_worker_error(
@@ -378,7 +376,7 @@ def test_document_deadline_shorter_than_the_page_limit(
         read_text_layers(path, deadline=time.monotonic() + 5)  # 5 s < the 60 s page limit
 
 
-def test_real_document_deadline_on_a_slow_pdf(tmp_path: Path, quick_stop: None) -> None:
+def test_real_document_deadline_on_a_slow_pdf(tmp_path: Path) -> None:
     path = build_form_bomb(tmp_path / "bomb.pdf", depth=5)
     # 0.05 s always runs out while the real reader starts. A longer limit would race
     # the bomb, which reads in under a second; the deadline falling mid-document is
@@ -386,3 +384,38 @@ def test_real_document_deadline_on_a_slow_pdf(tmp_path: Path, quick_stop: None) 
     limits = ExtractionLimits(max_document_s=0.05)
     with pytest.raises(DocumentTimeoutError):
         read_text_layers(path, limits)
+
+
+# Found in the whole-PR review: a failed reader was stopped gracefully, waiting
+# the stop grace for a child that was still busy on the page.
+
+
+def test_failed_reader_is_killed_without_the_stop_grace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tenderscreen.documents.sandbox.STOP_GRACE_S", 30.0)
+    monkeypatch.setattr(textlayer, "text_layer_child", count_then_stall)
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
+    started = time.monotonic()
+    with pytest.raises(PageTimeoutError, match="page 1"):
+        read_text_layers(path, ExtractionLimits(page_timeout_s=0.2))
+    assert time.monotonic() - started < 10  # a graceful stop would wait 30 s
+
+
+def test_reader_is_stopped_gracefully_only_after_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flags: list[bool] = []
+    real_stop = Child.stop
+
+    def record(self: Child, *, graceful: bool = True) -> None:
+        flags.append(graceful)
+        real_stop(self, graceful=graceful)
+
+    monkeypatch.setattr(Child, "stop", record)
+    path = build_pdf(tmp_path / "doc.pdf", [TextPage()])
+    read_text_layers(path)
+    monkeypatch.setattr(textlayer, "text_layer_child", count_then_stall)
+    with pytest.raises(PageTimeoutError):
+        read_text_layers(path, ExtractionLimits(page_timeout_s=0.2))
+    assert flags == [True, False]

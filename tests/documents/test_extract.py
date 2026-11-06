@@ -52,13 +52,6 @@ def fake_ocr(fake: Path, workers: int | None = None) -> ExtractionSettings:
     return ExtractionSettings(tesseract_binary=str(fake), ocr_dpi=72, workers=workers)
 
 
-@pytest.fixture
-def quick_stop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A text-layer reader stuck on a bomb never reads the stop message; it is killed
-    after the stop grace either way, and the default 0.5 s only makes the test slow."""
-    monkeypatch.setattr("tenderscreen.documents.sandbox.STOP_GRACE_S", 0.05)
-
-
 # A synthetic PDF user password (not a secret).
 LOCK_PHRASE = "synthetic-test-lock"
 
@@ -302,7 +295,7 @@ def test_scans_in_unusual_page_geometry_are_ocred(
     assert "AWARD OF CONTRACT" in page.text
 
 
-def test_pdf_bomb_fails_cleanly(tmp_path: Path, quick_stop: None) -> None:
+def test_pdf_bomb_fails_cleanly(tmp_path: Path) -> None:
     path = build_form_bomb(tmp_path / "bomb.pdf", depth=5)
     with pytest.raises(PageTimeoutError):
         extract_pages(path, limits=ExtractionLimits(page_timeout_s=0.05), settings=NO_OCR)

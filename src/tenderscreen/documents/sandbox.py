@@ -283,9 +283,9 @@ class Child:
         self.process.join(timeout=1.0)
         return self.process.exitcode
 
-    def stop(self) -> None:
-        """Ask the child to finish, kill it if it does not, and release its resources."""
-        stop_children([self], graceful=True)
+    def stop(self, *, graceful: bool = True) -> None:
+        """Stop the child and release its resources (see ``stop_children``)."""
+        stop_children([self], graceful=graceful)
 
 
 def _release(child: Child) -> None:

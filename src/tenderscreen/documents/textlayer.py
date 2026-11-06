@@ -213,6 +213,7 @@ def read_text_layers(
                 raise
             raise DocumentTimeoutError(path.name, limits.max_document_s) from None
 
+    finished = False
     try:
         kind, value = next_message()
         if kind == "error":
@@ -230,6 +231,7 @@ def read_text_layers(
             if kind != "page":
                 raise ChildProtocolError("unexpected message from the PDF reader")
             pages.append(page_from_json(data, page_number))
+        finished = True
         return pages
     except ChildTimeoutError:
         raise PageTimeoutError(path.name, page_number, limits.page_timeout_s, stage) from None
@@ -243,7 +245,9 @@ def read_text_layers(
     except (ChildProtocolError, ValueError) as exc:
         raise CorruptDocumentError(path.name, f"the PDF reader gave invalid output: {exc}") from exc
     finally:
-        child.stop()
+        # A reader that failed may be stuck mid-page and never read the stop
+        # message: kill it at once rather than after the stop grace.
+        child.stop(graceful=finished)
 
 
 def has_usable_text_layer(page: TextLayerPage, settings: ExtractionSettings) -> bool:

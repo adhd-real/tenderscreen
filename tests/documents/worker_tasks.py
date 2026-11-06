@@ -73,6 +73,12 @@ def die_mid_message(conn: Connection) -> None:
     os._exit(5)
 
 
+def count_then_stall(conn: Connection, path: str, max_pages: int) -> None:
+    """A text-layer reader stand-in that announces one page and never sends it."""
+    send_json(conn, ["count", 1])
+    time.sleep(60)
+
+
 def report_environment(conn: Connection) -> None:
     """A child target that reports which environment variables it can see."""
     names: list[Json] = [*sorted(os.environ)]
