@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 # Exact pins, like the dev tools below; Dependabot proposes upgrades weekly.
 dependencies = [
     "pillow==13.0.0",  # page images for OCR (MIT-CMU/HPND)
-    "pypdfium2==5.14.0",  # PDF text layers and page rendering (BSD-3/Apache-2.0); not poppler
+    "pypdfium2==5.15.0",  # PDF text layers and page rendering (BSD-3/Apache-2.0); not poppler
     "tzdata==2026.6",  # IST without system timezone files (zoneinfo falls back to it)
 ]
 
@@ -24,7 +24,7 @@ dev = [
     "pytest==9.2.0",
     "pytest-cov==7.1.0",
     "reportlab==5.1.0",  # tests generate their own PDFs (BSD)
-    "ruff==0.17.3",
+    "ruff==0.17.4",
 ]
 
 [tool.hatch.build.targets.wheel]
